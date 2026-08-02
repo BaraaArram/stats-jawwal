@@ -25,6 +25,7 @@ async function apiRequest(endpoint, options = {}) {
   }
 
   try {
+    console.debug('[JawwalPay UX+] API Request:', { method: defaultOptions.method, url, headers: defaultOptions.headers, body: defaultOptions.body });
     const response = await fetch(url, defaultOptions);
     const contentType = response.headers.get('content-type') || '';
 
@@ -35,6 +36,7 @@ async function apiRequest(endpoint, options = {}) {
     }
 
     const rawText = await response.text();
+    console.debug('[JawwalPay UX+] API Response:', { url, status: response.status, contentType, bodyPreview: rawText.slice(0, 400) });
     if (!rawText) {
       return null;
     }
@@ -234,17 +236,19 @@ async function filterPreviousRegistrations(params = {}) {
       method: 'POST',
       body
     });
+    console.debug('[JawwalPay UX+] filterPreviousRegistrations request:', { endpoint: '/agent/filterPreviousRegistration', requestBody: body, rawResponse: data });
 
+    const list = data?.data ?? data?.aaData ?? [];
     const normalized = {
       ...data,
       recordsTotal: Number(data?.recordsTotal ?? data?.recordsFiltered ?? data?.iTotalRecords ?? 0) || 0,
       recordsFiltered: Number(data?.recordsFiltered ?? data?.recordsTotal ?? data?.iTotalRecords ?? 0) || 0,
-      data: data?.data ?? data?.aaData ?? [],
+      data: list,
       data2: data?.data2 ?? [],
       raw: data
     };
 
-    console.log('[JawwalPay UX+] Previous registrations fetched:', normalized);
+    console.debug('[JawwalPay UX+] Previous registrations fetched (normalized):', { normalized, sampleRow: list[0] ?? null });
     return normalized;
   } catch (error) {
     console.error('[JawwalPay UX+] Failed to filter previous registrations:', error);
@@ -274,7 +278,7 @@ async function fetchDataTableData(endpoint, params = {}) {
       method: 'POST',
       body
     });
-    console.log('[JawwalPay UX+] DataTable data fetched from:', endpoint);
+    console.debug('[JawwalPay UX+] DataTable request:', { endpoint, requestBody: body, rawResponse: data });
     return data;
   } catch (error) {
     console.error('[JawwalPay UX+] Failed to fetch DataTable data:', error);
@@ -303,13 +307,21 @@ async function backendRequest(endpoint, options = {}) {
       defaultOptions.body = JSON.stringify(defaultOptions.body);
     }
 
+    console.debug('[JawwalPay UX+] Backend Request:', { method: defaultOptions.method || 'GET', url, headers: defaultOptions.headers, body: defaultOptions.body });
     const response = await fetch(url, defaultOptions);
+    const respText = await response.text();
     if (!response.ok) {
-      const errorText = await response.text();
-      console.warn(`[JawwalPay UX+] Cache backend request returned ${response.status} for ${url}:`, errorText.slice(0, 180));
+      console.warn(`[JawwalPay UX+] Cache backend request returned ${response.status} for ${url}:`, respText.slice(0, 400));
       return null;
     }
-    return await response.json();
+    try {
+      const json = JSON.parse(respText);
+      console.debug('[JawwalPay UX+] Backend Response JSON:', { url, status: response.status, body: json });
+      return json;
+    } catch (e) {
+      console.debug('[JawwalPay UX+] Backend Response Text:', { url, status: response.status, bodyPreview: respText.slice(0, 400) });
+      return null;
+    }
   } catch (error) {
     console.error('[JawwalPay UX+] Cache backend request failed:', error);
     return null;
