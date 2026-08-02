@@ -1,0 +1,20 @@
+{
+  "name": "jawwalpay-cache-service",
+  "version": "0.1.0",
+  "description": "Deployable backend cache service for Jawwal Pay UX+ user, team and record stats.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.4",
+    "lowdb": "^6.0.1"
+  },
+  "devDependencies": {
+    "render-cli": "^0.3.2"
+  }
+}
