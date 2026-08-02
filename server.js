@@ -25,6 +25,127 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: nowIso() });
 });
 
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+const COLLECTION_KEY_MAP = {
+  users: 'userId',
+  teams: 'teamId',
+  records: 'recordId',
+  teamStats: 'teamId'
+};
+
+const VALID_COLLECTIONS = Object.keys(COLLECTION_KEY_MAP);
+
+function getCollectionKey(collection) {
+  return COLLECTION_KEY_MAP[collection] || null;
+}
+
+function sanitizePayload(collection, payload) {
+  if (!payload || typeof payload !== 'object') {
+    return {};
+  }
+
+  const normalized = { ...payload };
+  delete normalized.id;
+  delete normalized._id;
+
+  if (collection === 'records' && normalized.payload && typeof normalized.payload === 'string') {
+    try {
+      normalized.payload = JSON.parse(normalized.payload);
+    } catch (error) {
+      normalized.payload = normalized.payload;
+    }
+  }
+
+  return normalized;
+}
+
+app.get('/admin/api/collections', async (req, res) => {
+  try {
+    const collections = {};
+    for (const collection of VALID_COLLECTIONS) {
+      const items = await listCollection(collection);
+      collections[collection] = { count: Array.isArray(items) ? items.length : 0, items };
+    }
+    res.json({ collections });
+  } catch (error) {
+    console.error('Failed to list admin collections:', error);
+    res.status(500).json({ error: 'Failed to load collections' });
+  }
+});
+
+app.get('/admin/api/:collection', async (req, res) => {
+  try {
+    const collection = req.params.collection;
+    if (!VALID_COLLECTIONS.includes(collection)) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    const items = await listCollection(collection);
+    res.json({ collection, items });
+  } catch (error) {
+    console.error('Failed to fetch admin collection:', error);
+    res.status(500).json({ error: 'Failed to fetch collection' });
+  }
+});
+
+app.post('/admin/api/:collection', async (req, res) => {
+  try {
+    const { collection } = req.params;
+    const key = getCollectionKey(collection);
+    if (!VALID_COLLECTIONS.includes(collection) || !key) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    const payload = sanitizePayload(collection, req.body);
+    const idValue = String(req.body[key] || req.body.id || `${collection}-${Date.now()}`);
+    const item = await upsertItem(collection, key, idValue, payload);
+    res.json({ collection, item });
+  } catch (error) {
+    console.error('Failed to create admin item:', error);
+    res.status(500).json({ error: 'Failed to create item' });
+  }
+});
+
+app.put('/admin/api/:collection/:id', async (req, res) => {
+  try {
+    const { collection, id } = req.params;
+    const key = getCollectionKey(collection);
+    if (!VALID_COLLECTIONS.includes(collection) || !key) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    const payload = sanitizePayload(collection, req.body);
+    const item = await upsertItem(collection, key, String(id), payload);
+    res.json({ collection, item });
+  } catch (error) {
+    console.error('Failed to update admin item:', error);
+    res.status(500).json({ error: 'Failed to update item' });
+  }
+});
+
+app.delete('/admin/api/:collection/:id', async (req, res) => {
+  try {
+    const { collection, id } = req.params;
+    const key = getCollectionKey(collection);
+    if (!VALID_COLLECTIONS.includes(collection) || !key) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    const removed = await deleteCollectionItem(collection, key, String(id));
+    if (!removed) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    res.json({ collection, removed });
+  } catch (error) {
+    console.error('Failed to delete admin item:', error);
+    res.status(500).json({ error: 'Failed to delete item' });
+  }
+});
+
 async function findItem(collection, key, value) {
   ensureDb();
   if (typeof db.findItem === 'function') {
@@ -48,6 +169,22 @@ async function filterItems(collection, key, value) {
     return await db.filterItems(collection, key, value);
   }
   return [];
+}
+
+async function listCollection(collection) {
+  ensureDb();
+  if (typeof db.listCollection === 'function') {
+    return await db.listCollection(collection);
+  }
+  return [];
+}
+
+async function deleteCollectionItem(collection, key, value) {
+  ensureDb();
+  if (typeof db.deleteItem === 'function') {
+    return await db.deleteItem(collection, key, value);
+  }
+  return null;
 }
 
 function ensureDb() {

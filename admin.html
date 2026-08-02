@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jawwal Pay Admin Console</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #07111f;
+        --panel: #0f1b2f;
+        --panel-2: #13243d;
+        --text: #f5f7fb;
+        --muted: #8ea0ba;
+        --accent: #4cc9f0;
+        --accent-2: #2ec4b6;
+        --danger: #ff6b6b;
+        --border: rgba(255,255,255,0.08);
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+        background: linear-gradient(135deg, var(--bg), #0d1830 60%, #13243d);
+        color: var(--text);
+      }
+
+      .shell { max-width: 1400px; margin: 0 auto; padding: 24px; }
+      .hero {
+        display: flex; justify-content: space-between; align-items: center; gap: 16px;
+        padding: 24px 28px; border-radius: 24px; background: rgba(15,27,47,0.9);
+        border: 1px solid var(--border); box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+        margin-bottom: 20px;
+      }
+      .hero h1 { margin: 0 0 8px; font-size: 1.7rem; }
+      .hero p { margin: 0; color: var(--muted); }
+      .pill {
+        padding: 10px 14px; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        color: #03111f; font-weight: 700; white-space: nowrap;
+      }
+
+      .grid { display: grid; grid-template-columns: 280px 1fr; gap: 20px; }
+      .sidebar, .content-card {
+        background: rgba(15,27,47,0.9); border: 1px solid var(--border); border-radius: 24px;
+        box-shadow: 0 20px 50px rgba(0,0,0,0.2);
+      }
+      .sidebar { padding: 18px; }
+      .sidebar h3 { margin: 0 0 12px; font-size: 1rem; }
+      .sidebar button {
+        width: 100%; text-align: left; padding: 12px 14px; margin-bottom: 8px; border: none;
+        border-radius: 12px; background: transparent; color: var(--text); cursor: pointer; transition: 0.2s ease;
+      }
+      .sidebar button.active, .sidebar button:hover { background: rgba(76,201,240,0.15); color: #a8eeff; }
+      .content-card { padding: 20px; }
+      .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+      .toolbar .search { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+      .toolbar input, .toolbar select { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); color: var(--text); }
+      .toolbar button { border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 700; color: white; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+      .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+      .stat { padding: 16px; border-radius: 16px; background: var(--panel-2); border: 1px solid var(--border); }
+      .stat .label { color: var(--muted); font-size: 0.9rem; margin-bottom: 6px; }
+      .stat .value { font-size: 1.4rem; font-weight: 700; }
+      table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 16px; }
+      th, td { padding: 12px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.95rem; vertical-align: top; }
+      th { color: var(--muted); font-weight: 600; }
+      tbody tr:hover { background: rgba(255,255,255,0.04); }
+      .muted { color: var(--muted); }
+      .actions button { border: none; border-radius: 8px; padding: 8px 10px; cursor: pointer; margin-right: 6px; color: #fff; }
+      .actions .del { background: var(--danger); }
+      .actions .edit { background: #6c63ff; }
+      .empty { padding: 24px; text-align: center; color: var(--muted); }
+      .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); padding: 24px; } 
+      .modal.open { display: grid; place-items: center; }
+      .modal-card { width: min(720px, 100%); padding: 20px; border-radius: 24px; background: var(--panel); border: 1px solid var(--border); }
+      .modal-card h3 { margin-top: 0; }
+      .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+      .field.full { grid-column: 1 / -1; }
+      .field input, .field textarea { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); color: var(--text); }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+      @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+      @media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="hero">
+        <div>
+          <h1>Jawwal Pay Admin Console</h1>
+          <p>Browse, search, and manage the cached user, team, record, and stats data from the API backend.</p>
+        </div>
+        <div class="pill" id="status-pill">Loading collections…</div>
+      </div>
+
+      <div class="grid">
+        <aside class="sidebar">
+          <h3>Collections</h3>
+          <button class="active" data-collection="users">Users</button>
+          <button data-collection="teams">Teams</button>
+          <button data-collection="records">Records</button>
+          <button data-collection="teamStats">Team Stats</button>
+        </aside>
+
+        <section class="content-card">
+          <div class="toolbar">
+            <div class="search">
+              <span>🔎</span>
+              <input id="searchInput" placeholder="Search by id, name, or value" />
+            </div>
+            <button id="newItemBtn">+ New Item</button>
+          </div>
+
+          <div class="stat-row" id="statsRow"></div>
+          <div id="tableWrap"></div>
+        </section>
+      </div>
+    </div>
+
+    <div class="modal" id="modal">
+      <div class="modal-card">
+        <h3 id="modalTitle">New Item</h3>
+        <form id="itemForm">
+          <div class="form-grid" id="formGrid"></div>
+          <div class="modal-actions">
+            <button type="button" id="cancelBtn">Cancel</button>
+            <button type="submit">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script>
+      const state = { collections: {}, activeCollection: 'users', currentItems: [], editingId: null };
+      const collectionMeta = {
+        users: { key: 'userId', label: 'Users', fields: [
+          { name: 'userId', label: 'User ID', required: true },
+          { name: 'username', label: 'Username' },
+          { name: 'teamId', label: 'Team ID' },
+          { name: 'metadata', label: 'Metadata', textarea: true }
+        ]},
+        teams: { key: 'teamId', label: 'Teams', fields: [
+          { name: 'teamId', label: 'Team ID', required: true },
+          { name: 'name', label: 'Team Name' },
+          { name: 'metadata', label: 'Metadata', textarea: true }
+        ]},
+        records: { key: 'recordId', label: 'Records', fields: [
+          { name: 'recordId', label: 'Record ID', required: true },
+          { name: 'userId', label: 'User ID' },
+          { name: 'teamId', label: 'Team ID' },
+          { name: 'payload', label: 'Payload', textarea: true }
+        ]},
+        teamStats: { key: 'teamId', label: 'Team Stats', fields: [
+          { name: 'teamId', label: 'Team ID', required: true },
+          { name: 'stats', label: 'Stats', textarea: true },
+          { name: 'lastUpdatedAt', label: 'Last Updated' }
+        ]}
+      };
+
+      function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;', '"':'&quot;',"'":'&#39;'}[char]));
+      }
+
+      function renderStats() {
+        const active = state.collections[state.activeCollection] || { count: 0, items: [] };
+        const statsRow = document.getElementById('statsRow');
+        statsRow.innerHTML = `
+          <div class="stat"><div class="label">Collection</div><div class="value">${collectionMeta[state.activeCollection].label}</div></div>
+          <div class="stat"><div class="label">Items</div><div class="value">${active.count}</div></div>
+          <div class="stat"><div class="label">Search Results</div><div class="value">${state.currentItems.length}</div></div>
+        `;
+      }
+
+      function renderTable() {
+        const items = state.currentItems;
+        const wrap = document.getElementById('tableWrap');
+        if (!items.length) {
+          wrap.innerHTML = '<div class="empty">No items found for this collection.</div>';
+          return;
+        }
+
+        const headers = Object.keys(items[0] || {}).filter((key) => key !== 'payload' || key === 'payload');
+        const visibleHeaders = headers.slice(0, 6);
+        const rows = items.map((item) => {
+          const values = visibleHeaders.map((key) => {
+            let value = item[key];
+            if (typeof value === 'object') value = JSON.stringify(value);
+            return `<td>${escapeHtml(value ?? '')}</td>`;
+          }).join('');
+          return `<tr>
+            ${values}
+            <td class="actions">
+              <button class="edit" data-action="edit" data-id="${escapeHtml(item[collectionMeta[state.activeCollection].key] ?? '')}">Edit</button>
+              <button class="del" data-action="delete" data-id="${escapeHtml(item[collectionMeta[state.activeCollection].key] ?? '')}">Delete</button>
+            </td>
+          </tr>`;
+        }).join('');
+
+        wrap.innerHTML = `
+          <table>
+            <thead><tr>${visibleHeaders.map((key) => `<th>${escapeHtml(key)}</th>`).join('')}<th>Actions</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      }
+
+      function applySearch() {
+        const term = document.getElementById('searchInput').value.toLowerCase();
+        const current = state.collections[state.activeCollection]?.items || [];
+        state.currentItems = current.filter((item) => {
+          return JSON.stringify(item).toLowerCase().includes(term);
+        });
+        renderStats();
+        renderTable();
+      }
+
+      async function loadCollections() {
+        const response = await fetch('/admin/api/collections');
+        const data = await response.json();
+        state.collections = data.collections || {};
+        document.getElementById('status-pill').textContent = 'Collections loaded';
+        selectCollection(state.activeCollection);
+      }
+
+      function selectCollection(collection) {
+        state.activeCollection = collection;
+        document.querySelectorAll('.sidebar button').forEach((btn) => btn.classList.toggle('active', btn.dataset.collection === collection));
+        const items = state.collections[collection]?.items || [];
+        state.currentItems = items;
+        renderStats();
+        renderTable();
+      }
+
+      function openModal(item = null) {
+        const meta = collectionMeta[state.activeCollection];
+        const formGrid = document.getElementById('formGrid');
+        document.getElementById('modalTitle').textContent = item ? 'Edit Item' : 'New Item';
+        state.editingId = item ? item[meta.key] : null;
+        formGrid.innerHTML = meta.fields.map((field) => {
+          const isFull = field.textarea || field.name === 'metadata' || field.name === 'payload' || field.name === 'stats';
+          return `
+            <div class="field ${isFull ? 'full' : ''}">
+              <label for="${field.name}">${field.label}</label>
+              ${field.textarea ? `<textarea id="${field.name}" name="${field.name}" rows="5"></textarea>` : `<input id="${field.name}" name="${field.name}" ${field.required ? 'required' : ''} />`}
+            </div>
+          `;
+        }).join('');
+
+        if (item) {
+          meta.fields.forEach((field) => {
+            const input = formGrid.querySelector(`#${field.name}`);
+            if (!input) return;
+            const value = item[field.name];
+            input.value = typeof value === 'object' ? JSON.stringify(value, null, 2) : (value ?? '');
+          });
+        }
+
+        document.getElementById('modal').classList.add('open');
+      }
+
+      document.getElementById('newItemBtn').addEventListener('click', () => openModal());
+      document.getElementById('cancelBtn').addEventListener('click', () => document.getElementById('modal').classList.remove('open'));
+      document.getElementById('searchInput').addEventListener('input', applySearch);
+
+      document.querySelectorAll('.sidebar button').forEach((btn) => {
+        btn.addEventListener('click', () => selectCollection(btn.dataset.collection));
+      });
+
+      document.getElementById('tableWrap').addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+        const action = button.dataset.action;
+        const id = button.dataset.id;
+        if (action === 'delete') {
+          if (!confirm('Delete this item?')) return;
+          await fetch(`/admin/api/${state.activeCollection}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          await loadCollections();
+        }
+        if (action === 'edit') {
+          const item = (state.collections[state.activeCollection]?.items || []).find((entry) => entry[collectionMeta[state.activeCollection].key] === id);
+          if (item) openModal(item);
+        }
+      });
+
+      document.getElementById('itemForm').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const formData = new FormData(event.target);
+        const payload = Object.fromEntries(formData.entries());
+        const meta = collectionMeta[state.activeCollection];
+        const body = {};
+        meta.fields.forEach((field) => {
+          if (!payload[field.name]) return;
+          let value = payload[field.name];
+          if (field.name === 'metadata' || field.name === 'payload' || field.name === 'stats') {
+            try { value = JSON.parse(value); } catch (error) { value = value; }
+          }
+          body[field.name] = value;
+        });
+        const keyValue = body[meta.key] || state.editingId;
+        if (!keyValue) {
+          alert('Please provide the primary key value');
+          return;
+        }
+        body[meta.key] = keyValue;
+        const method = state.editingId ? 'PUT' : 'POST';
+        const endpoint = state.editingId ? `/admin/api/${state.activeCollection}/${encodeURIComponent(state.editingId)}` : `/admin/api/${state.activeCollection}`;
+        await fetch(endpoint, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        document.getElementById('modal').classList.remove('open');
+        await loadCollections();
+      });
+
+      loadCollections();
+    </script>
+  </body>
+</html>
