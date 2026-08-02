@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Jawwal Pay UX+",
+  "version": "1.0.0",
+  "description": "Modern UI reskin for Jawwal Pay Business Portal",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://business.jawwalpay.ps/*",
+    "https://jawwalpay-cache-service.onrender.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://business.jawwalpay.ps/*"],
+      "js": ["content/loader.js", "content/page-detector.js", "content/style-injector.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["styles/*", "content/*", "icons/*", "images/*", "enhanced-reference/*"],
+      "matches": ["https://business.jawwalpay.ps/*"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
