@@ -51,36 +51,7 @@ npm start
 
 ## Deployment
 
-This can be deployed on Fly or any container platform using the included `Dockerfile`.
-
-### Deploying to Fly
-
-1. Install `flyctl` and log in:
-
-```bash
-flyctl auth login
-```
-
-2. Create a persistent volume for data storage:
-
-```bash
-flyctl volumes create backend-data --region <region> --size 1
-```
-
-3. Deploy the app:
-
-```bash
-cd backend
-flyctl deploy
-```
-
-4. If needed, set the database file path as an environment variable:
-
-```bash
-flyctl secrets set DB_PATH=/data/data.json
-```
-
-The app can use the included `fly.toml` and `Dockerfile` when deploying to Fly.
+This can be deployed to Render or any Node hosting provider.
 
 ### Deploying to Render
 
@@ -94,22 +65,24 @@ The app can use the included `fly.toml` and `Dockerfile` when deploying to Fly.
 
 ```bash
 PORT=3000
-DB_PATH=/data/data.json
+DB_PATH=data.json
 ```
 
-4. Add a persistent disk named `backend-data` with `1 GB`.
-5. Set the branch to deploy from, e.g. `main`.
-6. Save and deploy.
+4. Free-tier Render services do not support persistent disks. The service will run with ephemeral filesystem storage — data in `data.json` will not persist across instance restarts or redeploys.
+
+5. If you need persistence on the free tier, consider using an external storage service (S3, cloud storage, or a managed database) and set `DB_PATH` to a path or connection string for that service.
+
+6. Set the branch to deploy from, e.g. `master`, and save to deploy.
 
 If you use the `render.yaml` manifest at the repository root, Render can auto-detect this configuration and run it automatically.
 
 ### Using the backend from the extension
 
 - Default backend URL is `http://127.0.0.1:3000`.
-- After deploying to Fly, update `jawwal-pay-uxplus/content/api-hub.js` and replace `BACKEND_CACHE_BASE` with your Fly app URL, for example:
+- After deploying to Render, update `jawwal-pay-uxplus/content/api-hub.js` and replace `BACKEND_CACHE_BASE` with your Render app URL, for example:
 
 ```js
-const BACKEND_CACHE_BASE = 'https://your-fly-app.fly.dev';
+const BACKEND_CACHE_BASE = 'https://your-render-app.onrender.com';
 ```
 
 - Then install or reload the extension.

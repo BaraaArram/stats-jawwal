@@ -1,0 +1,13 @@
+{
+  "users": [
+    {
+      "username": "alice2",
+      "userId": "u1",
+      "createdAt": "2026-08-02T06:05:11.520Z",
+      "updatedAt": "2026-08-02T06:33:58.280Z"
+    }
+  ],
+  "teams": [],
+  "records": [],
+  "teamStats": []
+}

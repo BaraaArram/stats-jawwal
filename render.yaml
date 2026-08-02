@@ -1,13 +1,9 @@
-disks:
-  - name: backend-data
-    sizeGB: 1
-
 services:
   - type: web
     name: jawwalpay-cache-service
     env: node
     rootDir: backend
-    branch: main
+    branch: master
     autoDeploy: true
     plan: starter
     buildCommand: npm install
@@ -15,5 +11,4 @@ services:
     envVars:
       - key: PORT
         value: "3000"
-      - key: DB_PATH
-        value: "/data/data.json"
+      # DB_PATH removed — use DATABASE_URL (Neon) for production persistence
