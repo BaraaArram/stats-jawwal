@@ -25,31 +25,29 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: nowIso() });
 });
 
-function findItem(collection, key, value) {
-  return db.data[collection].find((item) => item[key] === value) || null;
-}
-
-function upsertItem(collection, key, value, item) {
-  const existingIndex = db.data[collection].findIndex((entry) => entry[key] === value);
-  if (existingIndex !== -1) {
-    db.data[collection][existingIndex] = {
-      ...db.data[collection][existingIndex],
-      ...item,
-      updatedAt: nowIso()
-    };
-  } else {
-    db.data[collection].push({
-      ...item,
-      [key]: value,
-      createdAt: nowIso(),
-      updatedAt: nowIso()
-    });
+async function findItem(collection, key, value) {
+  ensureDb();
+  if (typeof db.findItem === 'function') {
+    return await db.findItem(collection, key, value);
   }
-  return db.data[collection].find((entry) => entry[key] === value);
+  // fallback (shouldn't happen)
+  return null;
 }
 
-function filterItems(collection, key, value) {
-  return db.data[collection].filter((item) => item[key] === value);
+async function upsertItem(collection, key, value, item) {
+  ensureDb();
+  if (typeof db.upsertItem === 'function') {
+    return await db.upsertItem(collection, key, value, item);
+  }
+  return null;
+}
+
+async function filterItems(collection, key, value) {
+  ensureDb();
+  if (typeof db.filterItems === 'function') {
+    return await db.filterItems(collection, key, value);
+  }
+  return [];
 }
 
 function ensureDb() {
@@ -58,9 +56,9 @@ function ensureDb() {
   }
 }
 
-app.get('/users/:userId', (req, res) => {
+app.get('/users/:userId', async (req, res) => {
   ensureDb();
-  const user = findItem('users', 'userId', req.params.userId);
+  const user = await findItem('users', 'userId', req.params.userId);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
@@ -74,7 +72,7 @@ app.post('/users', async (req, res) => {
     return res.status(400).json({ error: 'userId is required' });
   }
 
-  const user = upsertItem('users', 'userId', String(userId), {
+  const user = await upsertItem('users', 'userId', String(userId), {
     username: username || null,
     teamId: teamId || null,
     metadata: metadata || null
@@ -84,9 +82,9 @@ app.post('/users', async (req, res) => {
   res.json({ user });
 });
 
-app.get('/teams/:teamId', (req, res) => {
+app.get('/teams/:teamId', async (req, res) => {
   ensureDb();
-  const team = findItem('teams', 'teamId', req.params.teamId);
+  const team = await findItem('teams', 'teamId', req.params.teamId);
   if (!team) {
     return res.status(404).json({ error: 'Team not found' });
   }
@@ -100,7 +98,7 @@ app.post('/teams', async (req, res) => {
     return res.status(400).json({ error: 'teamId is required' });
   }
 
-  const team = upsertItem('teams', 'teamId', String(teamId), {
+  const team = await upsertItem('teams', 'teamId', String(teamId), {
     name: name || null,
     metadata: metadata || null
   });
@@ -109,9 +107,9 @@ app.post('/teams', async (req, res) => {
   res.json({ team });
 });
 
-app.get('/records/:recordId', (req, res) => {
+app.get('/records/:recordId', async (req, res) => {
   ensureDb();
-  const record = findItem('records', 'recordId', req.params.recordId);
+  const record = await findItem('records', 'recordId', req.params.recordId);
   if (!record) {
     return res.status(404).json({ error: 'Record not found' });
   }
@@ -125,7 +123,7 @@ app.post('/records', async (req, res) => {
     return res.status(400).json({ error: 'recordId is required' });
   }
 
-  const record = upsertItem('records', 'recordId', String(recordId), {
+  const record = await upsertItem('records', 'recordId', String(recordId), {
     userId: userId || null,
     teamId: teamId || null,
     payload: payload || null
@@ -135,21 +133,21 @@ app.post('/records', async (req, res) => {
   res.json({ record });
 });
 
-app.get('/teams/:teamId/records', (req, res) => {
+app.get('/teams/:teamId/records', async (req, res) => {
   ensureDb();
-  const records = filterItems('records', 'teamId', req.params.teamId);
+  const records = await filterItems('records', 'teamId', req.params.teamId);
   res.json({ teamId: req.params.teamId, records });
 });
 
-app.get('/users/:userId/records', (req, res) => {
+app.get('/users/:userId/records', async (req, res) => {
   ensureDb();
-  const records = filterItems('records', 'userId', req.params.userId);
+  const records = await filterItems('records', 'userId', req.params.userId);
   res.json({ userId: req.params.userId, records });
 });
 
-app.get('/team-stats/:teamId', (req, res) => {
+app.get('/team-stats/:teamId', async (req, res) => {
   ensureDb();
-  const stats = findItem('teamStats', 'teamId', req.params.teamId);
+  const stats = await findItem('teamStats', 'teamId', req.params.teamId);
   if (!stats) {
     return res.status(404).json({ error: 'Team stats not found' });
   }
@@ -163,7 +161,7 @@ app.post('/team-stats', async (req, res) => {
     return res.status(400).json({ error: 'teamId is required' });
   }
 
-  const teamStat = upsertItem('teamStats', 'teamId', String(teamId), {
+  const teamStat = await upsertItem('teamStats', 'teamId', String(teamId), {
     stats: stats || null
   });
 
@@ -171,9 +169,9 @@ app.post('/team-stats', async (req, res) => {
   res.json({ stats: teamStat });
 });
 
-app.get('/user-team/:userId', (req, res) => {
+app.get('/user-team/:userId', async (req, res) => {
   ensureDb();
-  const user = findItem('users', 'userId', req.params.userId);
+  const user = await findItem('users', 'userId', req.params.userId);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
@@ -181,8 +179,8 @@ app.get('/user-team/:userId', (req, res) => {
     return res.status(400).json({ error: 'User has no teamId' });
   }
 
-  const team = findItem('teams', 'teamId', user.teamId);
-  const teamStats = findItem('teamStats', 'teamId', user.teamId);
+  const team = await findItem('teams', 'teamId', user.teamId);
+  const teamStats = await findItem('teamStats', 'teamId', user.teamId);
   res.json({ user, team: team || null, teamStats: teamStats || null });
 });
 
@@ -192,7 +190,7 @@ app.post('/cache/refresh', async (req, res) => {
   const result = {};
 
   if (user && user.userId) {
-    result.user = upsertItem('users', 'userId', String(user.userId), {
+    result.user = await upsertItem('users', 'userId', String(user.userId), {
       username: user.username || null,
       teamId: user.teamId || null,
       metadata: user.metadata || null
@@ -200,14 +198,14 @@ app.post('/cache/refresh', async (req, res) => {
   }
 
   if (team && team.teamId) {
-    result.team = upsertItem('teams', 'teamId', String(team.teamId), {
+    result.team = await upsertItem('teams', 'teamId', String(team.teamId), {
       name: team.name || null,
       metadata: team.metadata || null
     });
   }
 
   if (stats && stats.teamId) {
-    result.teamStats = upsertItem('teamStats', 'teamId', String(stats.teamId), {
+    result.teamStats = await upsertItem('teamStats', 'teamId', String(stats.teamId), {
       stats: stats.stats || null,
       lastUpdatedAt: stats.lastUpdatedAt || nowIso()
     });

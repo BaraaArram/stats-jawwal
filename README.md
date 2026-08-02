@@ -65,12 +65,14 @@ This can be deployed to Render or any Node hosting provider.
 
 ```bash
 PORT=3000
-DB_PATH=/data/data.json
+DB_PATH=data.json
 ```
 
-4. Add a persistent disk named `backend-data` with `1 GB`.
-5. Set the branch to deploy from, e.g. `main`.
-6. Save and deploy.
+4. Free-tier Render services do not support persistent disks. The service will run with ephemeral filesystem storage — data in `data.json` will not persist across instance restarts or redeploys.
+
+5. If you need persistence on the free tier, consider using an external storage service (S3, cloud storage, or a managed database) and set `DB_PATH` to a path or connection string for that service.
+
+6. Set the branch to deploy from, e.g. `master`, and save to deploy.
 
 If you use the `render.yaml` manifest at the repository root, Render can auto-detect this configuration and run it automatically.
 
