@@ -1,0 +1,19 @@
+disks:
+  - name: backend-data
+    sizeGB: 1
+
+services:
+  - type: web
+    name: jawwalpay-cache-service
+    env: node
+    rootDir: backend
+    branch: main
+    autoDeploy: true
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: DB_PATH
+        value: "/data/data.json"
