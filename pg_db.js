@@ -36,6 +36,15 @@ async function createPgDatabase(connectionString) {
       stats jsonb,
       lastUpdatedAt timestamptz DEFAULT now()
     );
+
+    CREATE TABLE IF NOT EXISTS registrationSummaries (
+      generatedAt timestamptz PRIMARY KEY,
+      totalRecords integer,
+      agents jsonb,
+      payload jsonb,
+      createdAt timestamptz DEFAULT now(),
+      updatedAt timestamptz DEFAULT now()
+    );
   `);
 
   return {
@@ -85,6 +94,15 @@ async function createPgDatabase(connectionString) {
         return normalizeRow('teamStats', res.rows[0]);
       }
 
+      if (collection === 'registrationSummaries') {
+        const q = `INSERT INTO registrationSummaries (generatedAt, totalRecords, agents, payload, createdAt, updatedAt)
+          VALUES ($1,$2,$3,$4,now(),now())
+          ON CONFLICT (generatedAt) DO UPDATE SET totalRecords = EXCLUDED.totalRecords, agents = EXCLUDED.agents, payload = EXCLUDED.payload, updatedAt = now()
+          RETURNING *`;
+        const res = await pool.query(q, [String(value), item.totalRecords || null, item.agents || null, item.payload || null]);
+        return normalizeRow('registrationSummaries', res.rows[0]);
+      }
+
       return null;
     },
     async filterItems(collection, key, value) {
@@ -92,6 +110,18 @@ async function createPgDatabase(connectionString) {
       const q = `SELECT * FROM ${table} WHERE ${key} = $1`;
       const res = await pool.query(q, [value]);
       return res.rows.map(r => normalizeRow(collection, r));
+    },
+    async listCollection(collection) {
+      const table = mapCollection(collection);
+      const q = `SELECT * FROM ${table}`;
+      const res = await pool.query(q);
+      return res.rows.map(r => normalizeRow(collection, r));
+    },
+    async deleteItem(collection, key, value) {
+      const table = mapCollection(collection);
+      const q = `DELETE FROM ${table} WHERE ${key} = $1 RETURNING *`;
+      const res = await pool.query(q, [value]);
+      return res.rows[0] ? normalizeRow(collection, res.rows[0]) : null;
     },
     async write() { /* noop for pg */ },
     async close() { await pool.end(); }
@@ -103,6 +133,7 @@ function mapCollection(collection) {
   if (collection === 'teams') return 'teams';
   if (collection === 'records') return 'records';
   if (collection === 'teamStats') return 'teamStats';
+  if (collection === 'registrationSummaries') return 'registrationSummaries';
   return collection;
 }
 
@@ -142,6 +173,16 @@ function normalizeRow(collection, row) {
       teamId: row.teamid || row.teamId,
       stats: row.stats || null,
       lastUpdatedAt: row.lastupdatedat || row.lastUpdatedAt
+    };
+  }
+  if (collection === 'registrationSummaries') {
+    return {
+      generatedAt: row.generatedat || row.generatedAt,
+      totalRecords: row.totalrecords || row.totalRecords,
+      agents: row.agents || null,
+      payload: row.payload || null,
+      createdAt: row.createdat || row.createdAt,
+      updatedAt: row.updatedat || row.updatedAt
     };
   }
   return row;

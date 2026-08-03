@@ -33,7 +33,8 @@ const COLLECTION_KEY_MAP = {
   users: 'userId',
   teams: 'teamId',
   records: 'recordId',
-  teamStats: 'teamId'
+  teamStats: 'teamId',
+  registrationSummaries: 'generatedAt'
 };
 
 const VALID_COLLECTIONS = Object.keys(COLLECTION_KEY_MAP);
@@ -318,12 +319,13 @@ app.get('/user-team/:userId', async (req, res) => {
 
   const team = await findItem('teams', 'teamId', user.teamId);
   const teamStats = await findItem('teamStats', 'teamId', user.teamId);
-  res.json({ user, team: team || null, teamStats: teamStats || null });
+  const records = await filterItems('records', 'userId', req.params.userId);
+  res.json({ user, team: team || null, teamStats: teamStats || null, records });
 });
 
 app.post('/cache/refresh', async (req, res) => {
   ensureDb();
-  const { user, team, stats } = req.body;
+  const { user, users, team, stats, records } = req.body;
   const result = {};
 
   if (user && user.userId) {
@@ -332,6 +334,19 @@ app.post('/cache/refresh', async (req, res) => {
       teamId: user.teamId || null,
       metadata: user.metadata || null
     });
+  }
+
+  if (Array.isArray(users) && users.length > 0) {
+    result.users = [];
+    for (const item of users) {
+      if (!item || !item.userId) continue;
+      const persistedUser = await upsertItem('users', 'userId', String(item.userId), {
+        username: item.username || null,
+        teamId: item.teamId || null,
+        metadata: item.metadata || null
+      });
+      result.users.push(persistedUser);
+    }
   }
 
   if (team && team.teamId) {
@@ -346,6 +361,19 @@ app.post('/cache/refresh', async (req, res) => {
       stats: stats.stats || null,
       lastUpdatedAt: stats.lastUpdatedAt || nowIso()
     });
+  }
+
+  if (Array.isArray(records) && records.length > 0) {
+    result.records = [];
+    for (const record of records) {
+      const recordId = record?.recordId || `${team?.teamId || user?.userId || 'record'}-${result.records.length + 1}`;
+      const persistedRecord = await upsertItem('records', 'recordId', String(recordId), {
+        userId: record?.userId || user?.userId || null,
+        teamId: record?.teamId || team?.teamId || null,
+        payload: record?.payload || record || null
+      });
+      result.records.push(persistedRecord);
+    }
   }
 
   await db.write();

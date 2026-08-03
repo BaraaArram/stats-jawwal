@@ -35,10 +35,10 @@ async function createDatabase(dbPath) {
   }
 
   if (!fs.existsSync(dbPath)) {
-    fs.writeFileSync(dbPath, JSON.stringify({ users: [], teams: [], records: [], teamStats: [] }, null, 2));
+    fs.writeFileSync(dbPath, JSON.stringify({ users: [], teams: [], records: [], teamStats: [], registrationSummaries: [] }, null, 2));
   }
 
-  const defaultData = { users: [], teams: [], records: [], teamStats: [] };
+  const defaultData = { users: [], teams: [], records: [], teamStats: [], registrationSummaries: [] };
 
   // Modern lowdb (Low + JSONFile)
   if (JSONFile && Low) {
