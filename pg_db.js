@@ -100,15 +100,6 @@ async function cleanUpLegacyTables(pool) {
 
 async function ensureCurrentSchema(pool) {
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      userId text PRIMARY KEY,
-      username text,
-      teamId text,
-      metadata jsonb,
-      createdAt timestamptz DEFAULT now(),
-      updatedAt timestamptz DEFAULT now()
-    );
-
     CREATE TABLE IF NOT EXISTS teams (
       teamId text PRIMARY KEY,
       name text,
@@ -117,19 +108,32 @@ async function ensureCurrentSchema(pool) {
       updatedAt timestamptz DEFAULT now()
     );
 
+    CREATE TABLE IF NOT EXISTS users (
+      userId text PRIMARY KEY,
+      username text,
+      teamId text,
+      metadata jsonb,
+      createdAt timestamptz DEFAULT now(),
+      updatedAt timestamptz DEFAULT now(),
+      CONSTRAINT users_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS records (
       recordId text PRIMARY KEY,
       userId text,
       teamId text,
       payload jsonb,
       createdAt timestamptz DEFAULT now(),
-      updatedAt timestamptz DEFAULT now()
+      updatedAt timestamptz DEFAULT now(),
+      CONSTRAINT records_user_fk FOREIGN KEY (userId) REFERENCES users(userId) ON DELETE CASCADE,
+      CONSTRAINT records_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS teamStats (
       teamId text PRIMARY KEY,
       stats jsonb,
-      lastUpdatedAt timestamptz DEFAULT now()
+      lastUpdatedAt timestamptz DEFAULT now(),
+      CONSTRAINT teamstats_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS registrationSummaries (
@@ -141,6 +145,8 @@ async function ensureCurrentSchema(pool) {
       updatedAt timestamptz DEFAULT now()
     );
   `);
+
+  await ensureForeignKeyConstraints(pool);
 
   const indexStatements = [
     `CREATE INDEX IF NOT EXISTS records_userid_idx ON records (userId);`,
@@ -154,6 +160,39 @@ async function ensureCurrentSchema(pool) {
       await pool.query(indexSql);
     } catch (error) {
       console.warn(`Failed to create index: ${error.message}`);
+    }
+  }
+}
+
+async function ensureForeignKeyConstraints(pool) {
+  const fkQueries = [
+    `DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_team_fk') THEN
+        ALTER TABLE users ADD CONSTRAINT users_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE;
+      END IF;
+    END $$;`,
+    `DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'records_user_fk') THEN
+        ALTER TABLE records ADD CONSTRAINT records_user_fk FOREIGN KEY (userId) REFERENCES users(userId) ON DELETE CASCADE;
+      END IF;
+    END $$;`,
+    `DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'records_team_fk') THEN
+        ALTER TABLE records ADD CONSTRAINT records_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE;
+      END IF;
+    END $$;`,
+    `DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'teamstats_team_fk') THEN
+        ALTER TABLE teamStats ADD CONSTRAINT teamstats_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE;
+      END IF;
+    END $$;`
+  ];
+
+  for (const sql of fkQueries) {
+    try {
+      await pool.query(sql);
+    } catch (error) {
+      console.warn(`Failed to ensure foreign key constraint: ${error.message}`);
     }
   }
 }

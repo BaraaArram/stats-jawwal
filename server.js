@@ -135,6 +135,22 @@ app.delete('/admin/api/:collection/:id', async (req, res) => {
       return res.status(404).json({ error: 'Collection not found' });
     }
 
+    if (collection === 'teams') {
+      const deletedTeam = await deleteCollectionItem('teams', 'teamId', String(id));
+      if (!deletedTeam) {
+        return res.status(404).json({ error: 'Team not found' });
+      }
+      return res.json({ collection, deletedTeam });
+    }
+
+    if (collection === 'users') {
+      const deletedUser = await deleteCollectionItem('users', 'userId', String(id));
+      if (!deletedUser) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      return res.json({ collection, deletedUser });
+    }
+
     const removed = await deleteCollectionItem(collection, key, String(id));
     if (!removed) {
       return res.status(404).json({ error: 'Item not found' });
