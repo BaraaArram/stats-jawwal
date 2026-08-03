@@ -54,12 +54,12 @@ async function createPgDatabase(connectionString) {
       }
 
       if (collection === 'registrationSummaries') {
-        const q = `INSERT INTO registrationSummaries (generatedAt, totalRecords, agents, payload, createdAt, updatedAt)
-          VALUES ($1,$2,$3,$4,now(),now())
-          ON CONFLICT (generatedAt) DO UPDATE SET totalRecords = EXCLUDED.totalRecords, agents = EXCLUDED.agents, payload = EXCLUDED.payload, updatedAt = now()
-          RETURNING *`;
-        const res = await pool.query(q, [String(value), item.totalRecords || null, item.agents ? JSON.stringify(item.agents) : null, item.payload ? JSON.stringify(item.payload) : null]);
-        return normalizeRow('registrationSummaries', res.rows[0]);
+        const q = `INSERT INTO registrationSummaries (summaryId, generatedAt, totalRecords, agents, payload, createdAt, updatedAt)
+            VALUES ($1,$2,$3,$4,$5,now(),now())
+            ON CONFLICT (summaryId) DO UPDATE SET generatedAt = EXCLUDED.generatedAt, totalRecords = EXCLUDED.totalRecords, agents = EXCLUDED.agents, payload = EXCLUDED.payload, updatedAt = now()
+            RETURNING *`;
+          const res = await pool.query(q, [String(value), item.generatedAt || null, item.totalRecords || null, item.agents ? JSON.stringify(item.agents) : null, item.payload ? JSON.stringify(item.payload) : null]);
+          return normalizeRow('registrationSummaries', res.rows[0]);
       }
 
       return null;
@@ -137,7 +137,8 @@ async function ensureCurrentSchema(pool) {
     );
 
     CREATE TABLE IF NOT EXISTS registrationSummaries (
-      generatedAt timestamptz PRIMARY KEY,
+      summaryId text PRIMARY KEY,
+      generatedAt timestamptz,
       totalRecords integer,
       agents jsonb,
       payload jsonb,
@@ -246,6 +247,7 @@ function normalizeRow(collection, row) {
   }
   if (collection === 'registrationSummaries') {
     return {
+      summaryId: row.summaryid || row.summaryId,
       generatedAt: row.generatedat || row.generatedAt,
       totalRecords: row.totalrecords || row.totalRecords,
       agents: row.agents || null,
