@@ -55,7 +55,7 @@ const COLLECTION_KEY_MAP = {
   teams: 'teamId',
   records: 'recordId',
   teamStats: 'teamId',
-  registrationSummaries: 'generatedAt'
+  registrationSummaries: 'summaryId'
 };
 
 const VALID_COLLECTIONS = Object.keys(COLLECTION_KEY_MAP);
@@ -554,7 +554,11 @@ app.post('/api/registration-summary', async (req, res) => {
   }
 
   try {
-    const stored = await upsertItem('registrationSummaries', 'generatedAt', generatedAt, {
+    // persist a single updatable summary entry (singleton)
+    const SUMMARY_SINGLETON_ID = 'latest';
+    const stored = await upsertItem('registrationSummaries', 'summaryId', SUMMARY_SINGLETON_ID, {
+      summaryId: SUMMARY_SINGLETON_ID,
+      generatedAt: generatedAt,
       payload: payloadForStore,
       totalRecords: Number.isNaN(totalRecords) ? null : totalRecords,
       agents,
@@ -674,11 +678,11 @@ app.post('/api/registration-summary', async (req, res) => {
 
 app.get('/api/registration-summary', async (req, res) => {
   ensureDb();
-  if (typeof db.listCollection === 'function') {
-    const summaries = await listCollection('registrationSummaries');
-    return res.json({ summaries });
+  if (typeof db.findItem === 'function') {
+    const single = await findItem('registrationSummaries', 'summaryId', 'latest');
+    return res.json({ summary: single || null });
   }
-  return res.status(500).json({ error: 'Registration summary list not available' });
+  return res.status(500).json({ error: 'Registration summary not available' });
 });
 
 app.get('/user-team/:userId', async (req, res) => {
