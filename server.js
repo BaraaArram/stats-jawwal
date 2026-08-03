@@ -88,7 +88,12 @@ app.get('/admin/api/collections', async (req, res) => {
   try {
     const collections = {};
     for (const collection of VALID_COLLECTIONS) {
-      const items = await listCollection(collection);
+      let items = await listCollection(collection);
+      if (collection === 'users') {
+        items = await Promise.all((items || []).map(attachComputedUserStats));
+      } else if (collection === 'teams') {
+        items = await Promise.all((items || []).map(attachComputedTeamStats));
+      }
       collections[collection] = { count: Array.isArray(items) ? items.length : 0, items };
     }
     res.json({ collections });
@@ -105,7 +110,12 @@ app.get('/admin/api/:collection', async (req, res) => {
       return res.status(404).json({ error: 'Collection not found' });
     }
 
-    const items = await listCollection(collection);
+    let items = await listCollection(collection);
+    if (collection === 'users') {
+      items = await Promise.all((items || []).map(attachComputedUserStats));
+    } else if (collection === 'teams') {
+      items = await Promise.all((items || []).map(attachComputedTeamStats));
+    }
     res.json({ collection, items });
   } catch (error) {
     console.error('Failed to fetch admin collection:', error);
@@ -270,6 +280,82 @@ async function deleteTeamAndRelatedData(teamId) {
   return { deletedTeam, deletedUsers, deletedRecords, deletedTeamStats };
 }
 
+function normalizeCounts(payload) {
+  if (!payload || typeof payload !== 'object') return { total: 0, approved: 0, pending: 0, rejected: 0, other: 0 };
+  const agent = payload.agent && typeof payload.agent === 'object' ? payload.agent : payload;
+  const byStatus = agent.byStatus && typeof agent.byStatus === 'object' ? agent.byStatus : {};
+  let approved = 0;
+  let pending = 0;
+  let rejected = 0;
+  let other = 0;
+  let total = 0;
+
+  for (const [key, value] of Object.entries(byStatus)) {
+    const count = Number(value || 0) || 0;
+    total += count;
+    const normalized = String(key || '').toLowerCase();
+    if (/موافقة|approved|تمت/.test(normalized)) approved += count;
+    else if (/قيد|pending|review|انتظار/.test(normalized)) pending += count;
+    else if (/مرفوض|rejected|رفض/.test(normalized)) rejected += count;
+    else other += count;
+  }
+
+  if (!total && Number(agent.totalCount || agent.totalRecords || 0)) {
+    total = Number(agent.totalCount || agent.totalRecords || 0);
+  }
+
+  return { total, approved, pending, rejected, other };
+}
+
+function aggregateRecordStats(records = []) {
+  const result = { totalRecords: 0, approvedCount: 0, pendingCount: 0, rejectedCount: 0, otherCount: 0, recordCount: 0 };
+  if (!Array.isArray(records)) return result;
+
+  for (const record of records) {
+    const payload = record && record.payload ? record.payload : {};
+    const counts = normalizeCounts(payload);
+    result.totalRecords += counts.total;
+    result.approvedCount += counts.approved;
+    result.pendingCount += counts.pending;
+    result.rejectedCount += counts.rejected;
+    result.otherCount += counts.other;
+    result.recordCount += 1;
+  }
+
+  return result;
+}
+
+async function attachComputedUserStats(user) {
+  if (!user || !user.userId) return user;
+  const records = await filterItems('records', 'userId', user.userId);
+  const counts = aggregateRecordStats(records);
+  return Object.assign({}, user, {
+    totalRecords: counts.totalRecords,
+    approvedCount: counts.approvedCount,
+    pendingCount: counts.pendingCount,
+    rejectedCount: counts.rejectedCount,
+    otherCount: counts.otherCount,
+    recordCount: counts.recordCount,
+    lastSeenSummaryAt: user.lastSeenSummaryAt || null
+  });
+}
+
+async function attachComputedTeamStats(team) {
+  if (!team || !team.teamId) return team;
+  const records = await filterItems('records', 'teamId', team.teamId);
+  const teamUsers = await filterItems('users', 'teamId', team.teamId);
+  const counts = aggregateRecordStats(records);
+  return Object.assign({}, team, {
+    totalRecords: counts.totalRecords,
+    approvedCount: counts.approvedCount,
+    pendingCount: counts.pendingCount,
+    rejectedCount: counts.rejectedCount,
+    otherCount: counts.otherCount,
+    memberCount: Array.isArray(teamUsers) ? teamUsers.length : 0,
+    lastSummaryAt: team.lastSummaryAt || null
+  });
+}
+
 async function ensureTeamExists(teamId) {
   if (!teamId) return null;
   const existingTeam = await findItem('teams', 'teamId', String(teamId));
@@ -377,12 +463,18 @@ app.delete('/users/:userId', async (req, res) => {
 
 app.post('/users', async (req, res) => {
   ensureDb();
-  const { userId, username, teamId, metadata } = req.body;
+  const { userId, username, teamId, totalRecords, approvedCount, pendingCount, rejectedCount, otherCount, lastSeenSummaryAt, metadata } = req.body;
   const resolvedUserId = String(userId || crypto.randomUUID());
 
   const user = await upsertItem('users', 'userId', resolvedUserId, {
     username: username || null,
     teamId: teamId || null,
+    totalRecords: Number(totalRecords || 0),
+    approvedCount: Number(approvedCount || 0),
+    pendingCount: Number(pendingCount || 0),
+    rejectedCount: Number(rejectedCount || 0),
+    otherCount: Number(otherCount || 0),
+    lastSeenSummaryAt: lastSeenSummaryAt || null,
     metadata: metadata || null
   });
 
@@ -416,11 +508,18 @@ app.delete('/teams/:teamId', async (req, res) => {
 
 app.post('/teams', async (req, res) => {
   ensureDb();
-  const { teamId, name, metadata } = req.body;
+  const { teamId, name, totalRecords, approvedCount, pendingCount, rejectedCount, otherCount, memberCount, lastSummaryAt, metadata } = req.body;
   const resolvedTeamId = String(teamId || crypto.randomUUID());
 
   const team = await upsertItem('teams', 'teamId', resolvedTeamId, {
     name: name || null,
+    totalRecords: Number(totalRecords || 0),
+    approvedCount: Number(approvedCount || 0),
+    pendingCount: Number(pendingCount || 0),
+    rejectedCount: Number(rejectedCount || 0),
+    otherCount: Number(otherCount || 0),
+    memberCount: Number(memberCount || 0),
+    lastSummaryAt: lastSummaryAt || null,
     metadata: metadata || null
   });
 

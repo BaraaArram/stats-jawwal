@@ -138,11 +138,24 @@
           { name: 'userId', label: 'User ID', required: true },
           { name: 'username', label: 'Username' },
           { name: 'teamId', label: 'Team ID' },
+          { name: 'totalRecords', label: 'Total Records', readonly: true },
+          { name: 'approvedCount', label: 'Approved Records', readonly: true },
+          { name: 'pendingCount', label: 'Pending Records', readonly: true },
+          { name: 'rejectedCount', label: 'Rejected Records', readonly: true },
+          { name: 'otherCount', label: 'Other Records', readonly: true },
+          { name: 'lastSeenSummaryAt', label: 'Last Seen Summary At', readonly: true },
           { name: 'metadata', label: 'Metadata', textarea: true }
         ]},
         teams: { key: 'teamId', label: 'Teams', fields: [
           { name: 'teamId', label: 'Team ID', required: true },
           { name: 'name', label: 'Team Name' },
+          { name: 'totalRecords', label: 'Total Records', readonly: true },
+          { name: 'approvedCount', label: 'Approved Records', readonly: true },
+          { name: 'pendingCount', label: 'Pending Records', readonly: true },
+          { name: 'rejectedCount', label: 'Rejected Records', readonly: true },
+          { name: 'otherCount', label: 'Other Records', readonly: true },
+          { name: 'memberCount', label: 'Member Count', readonly: true },
+          { name: 'lastSummaryAt', label: 'Last Summary At', readonly: true },
           { name: 'metadata', label: 'Metadata', textarea: true }
         ]},
         records: { key: 'recordId', label: 'Records', fields: [
@@ -186,8 +199,8 @@
           return;
         }
 
-        const headers = Object.keys(items[0] || {}).filter((key) => key !== 'payload' || key === 'payload');
-        const visibleHeaders = headers.slice(0, 6);
+        const meta = collectionMeta[state.activeCollection];
+        const visibleHeaders = meta.fields.map((field) => field.name).filter((name) => name !== 'payload' || name === 'payload').slice(0, 8);
         const rows = items.map((item) => {
           const values = visibleHeaders.map((key) => {
             let value = item[key];
@@ -197,8 +210,8 @@
           return `<tr>
             ${values}
             <td class="actions">
-              <button class="edit" data-action="edit" data-id="${escapeHtml(item[collectionMeta[state.activeCollection].key] ?? '')}">Edit</button>
-              <button class="del" data-action="delete" data-id="${escapeHtml(item[collectionMeta[state.activeCollection].key] ?? '')}">Delete</button>
+              <button class="edit" data-action="edit" data-id="${escapeHtml(item[meta.key] ?? '')}">Edit</button>
+              <button class="del" data-action="delete" data-id="${escapeHtml(item[meta.key] ?? '')}">Delete</button>
             </td>
           </tr>`;
         }).join('');
@@ -248,7 +261,7 @@
           return `
             <div class="field ${isFull ? 'full' : ''}">
               <label for="${field.name}">${field.label}</label>
-              ${field.textarea ? `<textarea id="${field.name}" name="${field.name}" rows="5"></textarea>` : `<input id="${field.name}" name="${field.name}" ${field.required ? 'required' : ''} />`}
+              ${field.textarea ? `<textarea id="${field.name}" name="${field.name}" rows="5" ${field.readonly ? 'readonly' : ''}></textarea>` : `<input id="${field.name}" name="${field.name}" ${field.required ? 'required' : ''} ${field.readonly ? 'readonly' : ''} />`}
             </div>
           `;
         }).join('');

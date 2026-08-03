@@ -18,20 +18,42 @@ async function createPgDatabase(connectionString) {
     },
     async upsertItem(collection, key, value, item) {
       if (collection === 'users') {
-        const q = `INSERT INTO users (userId, username, teamId, metadata, createdAt, updatedAt)
-          VALUES ($1,$2,$3,$4,now(),now())
-          ON CONFLICT (userId) DO UPDATE SET username = EXCLUDED.username, teamId = EXCLUDED.teamId, metadata = EXCLUDED.metadata, updatedAt = now()
+        const q = `INSERT INTO users (userId, username, teamId, totalRecords, approvedCount, pendingCount, rejectedCount, otherCount, lastSeenSummaryAt, metadata, createdAt, updatedAt)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),now())
+          ON CONFLICT (userId) DO UPDATE SET username = EXCLUDED.username, teamId = EXCLUDED.teamId, totalRecords = EXCLUDED.totalRecords, approvedCount = EXCLUDED.approvedCount, pendingCount = EXCLUDED.pendingCount, rejectedCount = EXCLUDED.rejectedCount, otherCount = EXCLUDED.otherCount, lastSeenSummaryAt = EXCLUDED.lastSeenSummaryAt, metadata = EXCLUDED.metadata, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [String(value), item.username || null, item.teamId || null, item.metadata ? JSON.stringify(item.metadata) : null]);
+        const res = await pool.query(q, [
+          String(value),
+          item.username || null,
+          item.teamId || null,
+          item.totalRecords || 0,
+          item.approvedCount || 0,
+          item.pendingCount || 0,
+          item.rejectedCount || 0,
+          item.otherCount || 0,
+          item.lastSeenSummaryAt || null,
+          item.metadata ? JSON.stringify(item.metadata) : null
+        ]);
         return normalizeRow('users', res.rows[0]);
       }
 
       if (collection === 'teams') {
-        const q = `INSERT INTO teams (teamId, name, metadata, createdAt, updatedAt)
-          VALUES ($1,$2,$3,now(),now())
-          ON CONFLICT (teamId) DO UPDATE SET name = EXCLUDED.name, metadata = EXCLUDED.metadata, updatedAt = now()
+        const q = `INSERT INTO teams (teamId, name, totalRecords, approvedCount, pendingCount, rejectedCount, otherCount, memberCount, lastSummaryAt, metadata, createdAt, updatedAt)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),now())
+          ON CONFLICT (teamId) DO UPDATE SET name = EXCLUDED.name, totalRecords = EXCLUDED.totalRecords, approvedCount = EXCLUDED.approvedCount, pendingCount = EXCLUDED.pendingCount, rejectedCount = EXCLUDED.rejectedCount, otherCount = EXCLUDED.otherCount, memberCount = EXCLUDED.memberCount, lastSummaryAt = EXCLUDED.lastSummaryAt, metadata = EXCLUDED.metadata, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [String(value), item.name || null, item.metadata ? JSON.stringify(item.metadata) : null]);
+        const res = await pool.query(q, [
+          String(value),
+          item.name || null,
+          item.totalRecords || 0,
+          item.approvedCount || 0,
+          item.pendingCount || 0,
+          item.rejectedCount || 0,
+          item.otherCount || 0,
+          item.memberCount || 0,
+          item.lastSummaryAt || null,
+          item.metadata ? JSON.stringify(item.metadata) : null
+        ]);
         return normalizeRow('teams', res.rows[0]);
       }
 
@@ -103,6 +125,13 @@ async function ensureCurrentSchema(pool) {
     CREATE TABLE IF NOT EXISTS teams (
       teamId text PRIMARY KEY,
       name text,
+      totalRecords integer DEFAULT 0,
+      approvedCount integer DEFAULT 0,
+      pendingCount integer DEFAULT 0,
+      rejectedCount integer DEFAULT 0,
+      otherCount integer DEFAULT 0,
+      memberCount integer DEFAULT 0,
+      lastSummaryAt timestamptz,
       metadata jsonb,
       createdAt timestamptz DEFAULT now(),
       updatedAt timestamptz DEFAULT now()
@@ -112,6 +141,12 @@ async function ensureCurrentSchema(pool) {
       userId text PRIMARY KEY,
       username text,
       teamId text,
+      totalRecords integer DEFAULT 0,
+      approvedCount integer DEFAULT 0,
+      pendingCount integer DEFAULT 0,
+      rejectedCount integer DEFAULT 0,
+      otherCount integer DEFAULT 0,
+      lastSeenSummaryAt timestamptz,
       metadata jsonb,
       createdAt timestamptz DEFAULT now(),
       updatedAt timestamptz DEFAULT now(),
@@ -158,6 +193,26 @@ async function ensureCurrentSchema(pool) {
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS registrationsummaries_summaryid_idx ON registrationSummaries (summaryId);`);
   } catch (mErr) {
     console.warn('Failed to migrate registrationSummaries schema:', mErr.message || mErr);
+  }
+
+  // Migration: ensure users and teams have explicit record counters and summary timestamps
+  try {
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totalRecords integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS approvedCount integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS pendingCount integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS rejectedCount integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS otherCount integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS lastSeenSummaryAt timestamptz;`);
+
+    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS totalRecords integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS approvedCount integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS pendingCount integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS rejectedCount integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS otherCount integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS memberCount integer DEFAULT 0;`);
+    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS lastSummaryAt timestamptz;`);
+  } catch (mErr) {
+    console.warn('Failed to migrate users/teams schema:', mErr.message || mErr);
   }
 
   const indexStatements = [
@@ -225,6 +280,12 @@ function normalizeRow(collection, row) {
       userId: row.userid || row.userId,
       username: row.username,
       teamId: row.teamid || row.teamId,
+      totalRecords: row.totalrecords || row.totalRecords || 0,
+      approvedCount: row.approvedcount || row.approvedCount || 0,
+      pendingCount: row.pendingcount || row.pendingCount || 0,
+      rejectedCount: row.rejectedcount || row.rejectedCount || 0,
+      otherCount: row.othercount || row.otherCount || 0,
+      lastSeenSummaryAt: row.lastseensummaryat || row.lastSeenSummaryAt || null,
       metadata: row.metadata || null,
       createdAt: row.createdat || row.createdAt,
       updatedAt: row.updatedat || row.updatedAt
@@ -234,6 +295,13 @@ function normalizeRow(collection, row) {
     return {
       teamId: row.teamid || row.teamId,
       name: row.name,
+      totalRecords: row.totalrecords || row.totalRecords || 0,
+      approvedCount: row.approvedcount || row.approvedCount || 0,
+      pendingCount: row.pendingcount || row.pendingCount || 0,
+      rejectedCount: row.rejectedcount || row.rejectedCount || 0,
+      otherCount: row.othercount || row.otherCount || 0,
+      memberCount: row.membercount || row.memberCount || 0,
+      lastSummaryAt: row.lastsummaryat || row.lastSummaryAt || null,
       metadata: row.metadata || null,
       createdAt: row.createdat || row.createdAt,
       updatedAt: row.updatedat || row.updatedAt
