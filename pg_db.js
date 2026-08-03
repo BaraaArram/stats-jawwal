@@ -22,7 +22,7 @@ async function createPgDatabase(connectionString) {
           VALUES ($1,$2,$3,$4,now(),now())
           ON CONFLICT (userId) DO UPDATE SET username = EXCLUDED.username, teamId = EXCLUDED.teamId, metadata = EXCLUDED.metadata, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [String(value), item.username || null, item.teamId || null, item.metadata || null]);
+        const res = await pool.query(q, [String(value), item.username || null, item.teamId || null, item.metadata ? JSON.stringify(item.metadata) : null]);
         return normalizeRow('users', res.rows[0]);
       }
 
@@ -31,7 +31,7 @@ async function createPgDatabase(connectionString) {
           VALUES ($1,$2,$3,now(),now())
           ON CONFLICT (teamId) DO UPDATE SET name = EXCLUDED.name, metadata = EXCLUDED.metadata, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [String(value), item.name || null, item.metadata || null]);
+        const res = await pool.query(q, [String(value), item.name || null, item.metadata ? JSON.stringify(item.metadata) : null]);
         return normalizeRow('teams', res.rows[0]);
       }
 
@@ -40,7 +40,7 @@ async function createPgDatabase(connectionString) {
           VALUES ($1,$2,$3,$4,now(),now())
           ON CONFLICT (recordId) DO UPDATE SET userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, payload = EXCLUDED.payload, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [String(value), item.userId || null, item.teamId || null, item.payload || null]);
+        const res = await pool.query(q, [String(value), item.userId || null, item.teamId || null, item.payload ? JSON.stringify(item.payload) : null]);
         return normalizeRow('records', res.rows[0]);
       }
 
@@ -49,7 +49,7 @@ async function createPgDatabase(connectionString) {
           VALUES ($1,$2,$3)
           ON CONFLICT (teamId) DO UPDATE SET stats = EXCLUDED.stats, lastUpdatedAt = EXCLUDED.lastUpdatedAt
           RETURNING *`;
-        const res = await pool.query(q, [String(value), item.stats || null, item.lastUpdatedAt || new Date().toISOString()]);
+        const res = await pool.query(q, [String(value), item.stats ? JSON.stringify(item.stats) : null, item.lastUpdatedAt || new Date().toISOString()]);
         return normalizeRow('teamStats', res.rows[0]);
       }
 
@@ -58,7 +58,7 @@ async function createPgDatabase(connectionString) {
           VALUES ($1,$2,$3,$4,now(),now())
           ON CONFLICT (generatedAt) DO UPDATE SET totalRecords = EXCLUDED.totalRecords, agents = EXCLUDED.agents, payload = EXCLUDED.payload, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [String(value), item.totalRecords || null, item.agents || null, item.payload || null]);
+        const res = await pool.query(q, [String(value), item.totalRecords || null, item.agents ? JSON.stringify(item.agents) : null, item.payload ? JSON.stringify(item.payload) : null]);
         return normalizeRow('registrationSummaries', res.rows[0]);
       }
 
