@@ -8,8 +8,27 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.json');
 
+if (typeof console !== 'undefined') {
+  console.log = () => {};
+  console.info = () => {};
+  console.debug = () => {};
+  console.warn = () => {};
+  console.trace = () => {};
+}
 app.use(cors({ origin: true, credentials: true }));
 app.options('*', cors({ origin: true, credentials: true }));
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With');
+  // Allow Accept header for clients that send it
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -418,6 +437,13 @@ app.post('/team-stats', async (req, res) => {
 
 app.post('/api/registration-summary', async (req, res) => {
   ensureDb();
+  // Log incoming summary requests for debugging (use console.error so logs survive suppression)
+  try {
+    const preview = req.body ? (typeof req.body === 'object' ? JSON.stringify(req.body).slice(0, 2000) : String(req.body).slice(0, 2000)) : null;
+    console.error('[Cache API] /api/registration-summary received', { timestamp: nowIso(), headers: req.headers, bodyPreview: preview, bodyLength: req.body ? (typeof req.body === 'object' ? JSON.stringify(req.body).length : String(req.body).length) : 0 });
+  } catch (e) {
+    console.error('[Cache API] failed to log incoming registration-summary request', e?.message || e);
+  }
   const summary = req.body;
   if (!summary || typeof summary !== 'object') {
     return res.status(400).json({ error: 'summary payload is required' });
