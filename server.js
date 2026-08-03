@@ -485,6 +485,54 @@ app.post('/api/registration-summary', async (req, res) => {
       updatedAt: new Date().toISOString()
     });
 
+    // Persist related entities so dashboards/admin API can show users, teams and records
+    try {
+      const teamStatsMap = {};
+      if (Array.isArray(agents) && agents.length) {
+        for (const agent of agents) {
+          try {
+            const username = String(agent?.username || agent?.userId || '').trim();
+            const teamId = String(agent?.team || 'unknown').trim() || 'unknown';
+            if (!username) continue;
+
+            // Ensure team and user exist
+            await ensureTeamExists(teamId);
+            await ensureUserExists(username, teamId);
+
+            // Accumulate team stats
+            if (!teamStatsMap[teamId]) teamStatsMap[teamId] = { teamId, totalRecords: 0, agents: [] };
+            teamStatsMap[teamId].totalRecords += Number(agent?.totalCount || 0);
+            teamStatsMap[teamId].agents.push({ username, totalCount: Number(agent?.totalCount || 0), byStatus: agent?.byStatus || {} });
+
+            // Create a record entry summarizing this agent's counts (idempotent per generatedAt+username)
+            const recordId = `summary-${generatedAt}-${username}`;
+            await upsertItem('records', 'recordId', String(recordId), {
+              userId: username,
+              teamId,
+              payload: agent || {}
+            });
+          } catch (innerErr) {
+            console.error('[Cache API] failed to persist agent-derived entities', innerErr?.message || innerErr, { agent });
+          }
+        }
+      }
+
+      // Persist aggregated team stats
+      for (const [teamId, stats] of Object.entries(teamStatsMap)) {
+        try {
+          await ensureTeamExists(teamId);
+          await upsertItem('teamStats', 'teamId', String(teamId), {
+            stats: stats || null,
+            lastUpdatedAt: nowIso()
+          });
+        } catch (tErr) {
+          console.error('[Cache API] failed to persist teamStats for', teamId, tErr?.message || tErr);
+        }
+      }
+    } catch (relatedErr) {
+      console.error('[Cache API] registration-summary related persistence failed', relatedErr?.message || relatedErr);
+    }
+
     await db.write();
     return res.json({ summary: stored });
   } catch (dbErr) {
