@@ -162,6 +162,16 @@
           { name: 'recordId', label: 'Record ID', required: true },
           { name: 'userId', label: 'User ID' },
           { name: 'teamId', label: 'Team ID' },
+          { name: 'fullName', label: 'Full Name' },
+          { name: 'customerIdNumber', label: 'Customer ID' },
+          { name: 'mobileNumber', label: 'Mobile Number' },
+          { name: 'creationDate', label: 'Creation Date' },
+          { name: 'submissionDate', label: 'Submission Date' },
+          { name: 'approvalDate', label: 'Approval Date' },
+          { name: 'regAgentName', label: 'Agent Name' },
+          { name: 'customerStatus', label: 'Status' },
+          { name: 'regAgentDeviceName', label: 'Agent Device' },
+          { name: 'allowEdit', label: 'Allow Edit' },
           { name: 'payload', label: 'Payload', textarea: true }
         ]},
         teamStats: { key: 'teamId', label: 'Team Stats', fields: [
@@ -200,7 +210,7 @@
         }
 
         const meta = collectionMeta[state.activeCollection];
-        const visibleHeaders = meta.fields.map((field) => field.name).filter((name) => name !== 'payload' || name === 'payload').slice(0, 8);
+        const visibleHeaders = meta.fields.map((field) => field.name).filter((name) => name !== 'payload' || name === 'payload');
         const rows = items.map((item) => {
           const values = visibleHeaders.map((key) => {
             let value = item[key];

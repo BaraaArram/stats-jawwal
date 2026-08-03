@@ -58,11 +58,26 @@ async function createPgDatabase(connectionString) {
       }
 
       if (collection === 'records') {
-        const q = `INSERT INTO records (recordId, userId, teamId, payload, createdAt, updatedAt)
-          VALUES ($1,$2,$3,$4,now(),now())
-          ON CONFLICT (recordId) DO UPDATE SET userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, payload = EXCLUDED.payload, updatedAt = now()
+        const q = `INSERT INTO records (recordId, userId, teamId, fullName, customerIdNumber, mobileNumber, creationDate, submissionDate, approvalDate, regAgentName, customerStatus, regAgentDeviceName, allowEdit, payload, createdAt, updatedAt)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now())
+          ON CONFLICT (recordId) DO UPDATE SET userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, fullName = EXCLUDED.fullName, customerIdNumber = EXCLUDED.customerIdNumber, mobileNumber = EXCLUDED.mobileNumber, creationDate = EXCLUDED.creationDate, submissionDate = EXCLUDED.submissionDate, approvalDate = EXCLUDED.approvalDate, regAgentName = EXCLUDED.regAgentName, customerStatus = EXCLUDED.customerStatus, regAgentDeviceName = EXCLUDED.regAgentDeviceName, allowEdit = EXCLUDED.allowEdit, payload = EXCLUDED.payload, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [String(value), item.userId || null, item.teamId || null, item.payload ? JSON.stringify(item.payload) : null]);
+        const res = await pool.query(q, [
+          String(value),
+          item.userId || null,
+          item.teamId || null,
+          item.fullName || null,
+          item.customerIdNumber || null,
+          item.mobileNumber || null,
+          item.creationDate || null,
+          item.submissionDate || null,
+          item.approvalDate || null,
+          item.regAgentName || null,
+          item.customerStatus || null,
+          item.regAgentDeviceName || null,
+          item.allowEdit != null ? String(item.allowEdit) : null,
+          item.payload ? JSON.stringify(item.payload) : null
+        ]);
         return normalizeRow('records', res.rows[0]);
       }
 
@@ -157,6 +172,16 @@ async function ensureCurrentSchema(pool) {
       recordId text PRIMARY KEY,
       userId text,
       teamId text,
+      fullName text,
+      customerIdNumber text,
+      mobileNumber text,
+      creationDate text,
+      submissionDate text,
+      approvalDate text,
+      regAgentName text,
+      customerStatus text,
+      regAgentDeviceName text,
+      allowEdit text,
       payload jsonb,
       createdAt timestamptz DEFAULT now(),
       updatedAt timestamptz DEFAULT now(),
@@ -211,6 +236,17 @@ async function ensureCurrentSchema(pool) {
     await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS otherCount integer DEFAULT 0;`);
     await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS memberCount integer DEFAULT 0;`);
     await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS lastSummaryAt timestamptz;`);
+
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS fullName text;`);
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS customerIdNumber text;`);
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS mobileNumber text;`);
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS creationDate text;`);
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS submissionDate text;`);
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS approvalDate text;`);
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS regAgentName text;`);
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS customerStatus text;`);
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS regAgentDeviceName text;`);
+    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS allowEdit text;`);
   } catch (mErr) {
     console.warn('Failed to migrate users/teams schema:', mErr.message || mErr);
   }
@@ -312,6 +348,16 @@ function normalizeRow(collection, row) {
       recordId: row.recordid || row.recordId,
       userId: row.userid || row.userId,
       teamId: row.teamid || row.teamId,
+      fullName: row.fullname || row.fullName || null,
+      customerIdNumber: row.customeridnumber || row.customerIdNumber || null,
+      mobileNumber: row.mobilenumber || row.mobileNumber || null,
+      creationDate: row.creationdate || row.creationDate || null,
+      submissionDate: row.submissiondate || row.submissionDate || null,
+      approvalDate: row.approvaldate || row.approvalDate || null,
+      regAgentName: row.regagentname || row.regAgentName || null,
+      customerStatus: row.customerstatus || row.customerStatus || null,
+      regAgentDeviceName: row.regagentdevicename || row.regAgentDeviceName || null,
+      allowEdit: row.allowedit || row.allowEdit || null,
       payload: row.payload || null,
       createdAt: row.createdat || row.createdAt,
       updatedAt: row.updatedat || row.updatedAt

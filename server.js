@@ -280,6 +280,60 @@ async function deleteTeamAndRelatedData(teamId) {
   return { deletedTeam, deletedUsers, deletedRecords, deletedTeamStats };
 }
 
+function normalizeRegistrationSummaryRow(row, index) {
+  if (row == null) return null;
+  if (Array.isArray(row)) {
+    return {
+      id: String(row[2] ?? row[1] ?? `row-${index}`),
+      fullName: String(row[0] ?? '').trim(),
+      customerIdNumber: String(row[1] ?? '').trim(),
+      mobileNumber: String(row[2] ?? '').trim(),
+      creationDate: row[3] == null ? null : String(row[3]).trim(),
+      submissionDate: row[4] == null ? null : String(row[4]).trim(),
+      approvalDate: row[5] == null ? null : String(row[5]).trim(),
+      regAgentName: String(row[6] ?? '').trim(),
+      customerStatus: String(row[7] ?? '').trim(),
+      regAgentDeviceName: String(row[8] ?? '').trim(),
+      allowEdit: String(row[9] ?? 'false').trim()
+    };
+  }
+
+  if (typeof row === 'object') {
+    return {
+      id: row.id != null ? String(row.id) : null,
+      fullName: String(row.fullName ?? row.name ?? '').trim(),
+      customerIdNumber: String(row.customerIdNumber ?? row.customer_id ?? row.customerId ?? '').trim(),
+      mobileNumber: String(row.mobileNumber ?? row.phone ?? row.mobile ?? '').trim(),
+      creationDate: row.creationDate ?? row.startDate ?? null,
+      submissionDate: row.submissionDate ?? row.submittedAt ?? null,
+      approvalDate: row.approvalDate ?? row.approvedAt ?? null,
+      regAgentName: String(row.regAgentName ?? row.agentRegion ?? row.agentName ?? row.agent ?? '').trim(),
+      customerStatus: String(row.customerStatus ?? row.status ?? '').trim(),
+      regAgentDeviceName: String(row.regAgentDeviceName ?? row.agentDeviceName ?? row.agentName ?? '').trim(),
+      allowEdit: row.allowEdit != null ? String(row.allowEdit) : 'false'
+    };
+  }
+
+  return null;
+}
+
+function extractAgentFromRow(row = {}) {
+  const username = String(row.regAgentDeviceName || row.agentDeviceName || row.agentName || row.regAgentName || row.agent || row.username || '').trim();
+  const teamId = String(row.regAgentName || row.agentRegion || row.agent || '').trim() || null;
+  return { username, teamId };
+}
+
+function getSummaryRows(summary) {
+  if (!summary || typeof summary !== 'object') return [];
+  if (Array.isArray(summary.data) && summary.data.length) return summary.data;
+  if (Array.isArray(summary.data2) && summary.data2.length) return summary.data2;
+  if (summary.payload && typeof summary.payload === 'object') {
+    if (Array.isArray(summary.payload.data) && summary.payload.data.length) return summary.payload.data;
+    if (Array.isArray(summary.payload.data2) && summary.payload.data2.length) return summary.payload.data2;
+  }
+  return [];
+}
+
 function normalizeCounts(payload) {
   if (!payload || typeof payload !== 'object') return { total: 0, approved: 0, pending: 0, rejected: 0, other: 0 };
   const agent = payload.agent && typeof payload.agent === 'object' ? payload.agent : payload;
@@ -538,12 +592,37 @@ app.get('/records/:recordId', async (req, res) => {
 
 app.post('/records', async (req, res) => {
   ensureDb();
-  const { recordId, userId, teamId, payload } = req.body;
+  const {
+    recordId,
+    userId,
+    teamId,
+    fullName,
+    customerIdNumber,
+    mobileNumber,
+    creationDate,
+    submissionDate,
+    approvalDate,
+    regAgentName,
+    customerStatus,
+    regAgentDeviceName,
+    allowEdit,
+    payload
+  } = req.body;
   const resolvedRecordId = String(recordId || crypto.randomUUID());
 
   const record = await upsertItem('records', 'recordId', resolvedRecordId, {
     userId: userId || null,
     teamId: teamId || null,
+    fullName: fullName || null,
+    customerIdNumber: customerIdNumber || null,
+    mobileNumber: mobileNumber || null,
+    creationDate: creationDate || null,
+    submissionDate: submissionDate || null,
+    approvalDate: approvalDate || null,
+    regAgentName: regAgentName || null,
+    customerStatus: customerStatus || null,
+    regAgentDeviceName: regAgentDeviceName || null,
+    allowEdit: allowEdit != null ? String(allowEdit) : null,
     payload: payload || null
   });
 
@@ -704,33 +783,56 @@ app.post('/api/registration-summary', async (req, res) => {
             teamStatsMap[teamId].totalRecords += Number(agent?.totalCount || 0);
             teamStatsMap[teamId].agents.push({ username, totalCount: Number(agent?.totalCount || 0), byStatus: agent?.byStatus || {} });
 
-            // Normalize record payload for admin UI clarity
-            const normalizedPayload = {
+          } catch (innerErr) {
+            console.error('[Cache API] failed to persist agent-derived entities', innerErr?.message || innerErr, { agent });
+          }
+        }
+      }
+
+      const summaryRows = getSummaryRows(summary);
+      if (Array.isArray(summaryRows) && summaryRows.length) {
+        for (let rowIndex = 0; rowIndex < summaryRows.length; rowIndex += 1) {
+          const rawRow = summaryRows[rowIndex];
+          const normalizedRow = normalizeRegistrationSummaryRow(rawRow, rowIndex);
+          if (!normalizedRow) continue;
+
+          const { username, teamId } = extractAgentFromRow(normalizedRow);
+          if (!username) continue;
+
+          const status = String(normalizedRow.customerStatus || normalizedRow.status || 'unknown');
+          const statusSummary = summarizeStatusCounts({ [status]: 1 });
+          const recordId = String(normalizedRow.id || `${generatedAt}-${username}-${rowIndex}`);
+
+          await upsertItem('records', 'recordId', recordId, {
+            userId: username,
+            teamId,
+            fullName: normalizedRow.fullName || null,
+            customerIdNumber: normalizedRow.customerIdNumber || null,
+            mobileNumber: normalizedRow.mobileNumber || null,
+            creationDate: normalizedRow.creationDate || null,
+            submissionDate: normalizedRow.submissionDate || null,
+            approvalDate: normalizedRow.approvalDate || null,
+            regAgentName: normalizedRow.regAgentName || null,
+            customerStatus: normalizedRow.customerStatus || null,
+            regAgentDeviceName: normalizedRow.regAgentDeviceName || null,
+            allowEdit: normalizedRow.allowEdit || 'false',
+            payload: {
               summaryGeneratedAt: generatedAt,
               ingest: ingestMeta,
+              row: normalizedRow,
               agent: {
                 username,
                 teamId,
-                totalCount: Number(agent?.totalCount || 0),
-                byStatus: agent?.byStatus || {},
+                totalCount: 1,
+                byStatus: { [status]: 1 },
                 approvedCount: statusSummary.approved,
                 pendingCount: statusSummary.pending,
                 rejectedCount: statusSummary.rejected,
                 topStatus: statusSummary.topStatus
               },
-              original: agent || {}
-            };
-
-            // Create a record entry summarizing this agent's counts (idempotent per generatedAt+username)
-            const recordId = `summary-${generatedAt}-${username}`;
-            await upsertItem('records', 'recordId', String(recordId), {
-              userId: username,
-              teamId,
-              payload: normalizedPayload
-            });
-          } catch (innerErr) {
-            console.error('[Cache API] failed to persist agent-derived entities', innerErr?.message || innerErr, { agent });
-          }
+              original: rawRow
+            }
+          });
         }
       }
 
@@ -857,24 +959,33 @@ app.post('/cache/refresh', async (req, res) => {
     }
 
     if (Array.isArray(records) && records.length > 0) {
-      result.records = [];
-      for (const record of records) {
-        if (record?.teamId) {
-          await ensureTeamExists(record.teamId);
+        result.records = [];
+        for (const record of records) {
+          if (record?.teamId) {
+            await ensureTeamExists(record.teamId);
+          }
+          if (record?.userId) {
+            await ensureUserExists(record.userId, record.teamId || team?.teamId || user?.teamId);
+          }
+          const recordId = record?.recordId || `${team?.teamId || user?.userId || 'record'}-${result.records.length + 1}`;
+          const persistedRecord = await upsertItem('records', 'recordId', String(recordId), {
+            userId: record?.userId || null,
+            teamId: record?.teamId || null,
+            fullName: record?.fullName || record?.name || null,
+            customerIdNumber: record?.customerIdNumber || record?.customer_id || record?.customerId || null,
+            mobileNumber: record?.mobileNumber || record?.phone || record?.mobile || null,
+            creationDate: record?.creationDate || record?.startDate || null,
+            submissionDate: record?.submissionDate || record?.submittedAt || null,
+            approvalDate: record?.approvalDate || record?.approvedAt || null,
+            regAgentName: record?.regAgentName || record?.agentRegion || record?.agentName || record?.agent || null,
+            customerStatus: record?.customerStatus || record?.status || null,
+            regAgentDeviceName: record?.regAgentDeviceName || record?.agentDeviceName || record?.agentName || null,
+            allowEdit: record?.allowEdit != null ? String(record?.allowEdit) : null,
+            payload: record?.payload || record || null
+          });
+          result.records.push(persistedRecord);
         }
-        if (record?.userId) {
-          await ensureUserExists(record.userId, record.teamId || team?.teamId || user?.teamId);
-        }
-        const recordId = record?.recordId || `${team?.teamId || user?.userId || 'record'}-${result.records.length + 1}`;
-        const persistedRecord = await upsertItem('records', 'recordId', String(recordId), {
-          userId: record?.userId || user?.userId || null,
-          teamId: record?.teamId || team?.teamId || null,
-          payload: record?.payload || record || null
-        });
-        result.records.push(persistedRecord);
       }
-    }
-
     await db.write();
     return res.json(result);
   } catch (error) {
