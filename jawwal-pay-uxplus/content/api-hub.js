@@ -307,19 +307,21 @@ async function backendRequest(endpoint, options = {}) {
       defaultOptions.body = JSON.stringify(defaultOptions.body);
     }
 
-    console.debug('[JawwalPay UX+] Backend Request:', { method: defaultOptions.method || 'GET', url, headers: defaultOptions.headers, body: defaultOptions.body });
-    const response = await fetch(url, defaultOptions);
+    console.log('[JawwalPay UX+] Backend Request:', { method: defaultOptions.method || 'GET', url, headers: defaultOptions.headers, body: defaultOptions.body });
+    const response = await fetch(url, { ...defaultOptions, mode: 'cors' });
+    console.log('[JawwalPay UX+] Backend Response Status:', { url, status: response.status, ok: response.ok, contentType: response.headers.get('content-type') || '' });
     const respText = await response.text();
+    console.log('[JawwalPay UX+] Backend Response Body:', { url, bodyPreview: respText.slice(0, 600) });
     if (!response.ok) {
       console.warn(`[JawwalPay UX+] Cache backend request returned ${response.status} for ${url}:`, respText.slice(0, 400));
       return null;
     }
     try {
       const json = JSON.parse(respText);
-      console.debug('[JawwalPay UX+] Backend Response JSON:', { url, status: response.status, body: json });
+      console.log('[JawwalPay UX+] Backend Response JSON:', { url, status: response.status, body: json });
       return json;
     } catch (e) {
-      console.debug('[JawwalPay UX+] Backend Response Text:', { url, status: response.status, bodyPreview: respText.slice(0, 400) });
+      console.log('[JawwalPay UX+] Backend Response Text:', { url, status: response.status, bodyPreview: respText.slice(0, 400) });
       return null;
     }
   } catch (error) {
@@ -376,18 +378,43 @@ async function getOrRefreshCurrentUserCache() {
   if (!currentUser) return null;
   const cacheKey = currentUser.toLowerCase().replace(/\s+/g, '_');
   const cached = await fetchCachedUserTeamFromBackend(cacheKey);
-  if (cached && (cached.user || cached.team || cached.stats)) {
-    return cached;
-  }
+  const userRecordsResponse = await backendRequest(`/users/${encodeURIComponent(cacheKey)}/records`);
+  const hasUserEntries = Array.isArray(userRecordsResponse?.records) && userRecordsResponse.records.length > 0;
 
-  const portalStats = await fetchMerchantInfo();
+  console.log('[JawwalPay UX+] Cache refresh decision', {
+    currentUser,
+    cacheKey,
+    cachedExists: Boolean(cached),
+    hasUserEntries,
+    cachedUser: cached?.user ? true : false,
+    cachedTeam: cached?.team ? true : false,
+    cachedStats: cached?.teamStats ? true : false
+  });
+
+  const portalResponse = await filterPreviousRegistrations({
+    mobileNumber: '',
+    fromSubmissionDate: '',
+    toSubmissionDate: '',
+    sSearch: '',
+    offset: '0',
+    max: '100',
+    draw: '1',
+    orderColumn: '0',
+    orderDirection: 'desc'
+  });
+
+  const portalRows = Array.isArray(portalResponse?.data) ? portalResponse.data : [];
+  const records = buildPortalRecordsForCache(portalRows, cacheKey, cacheKey);
+  const portalCounts = calculatePortalUserTeamCounts(portalRows, currentUser);
+
   const fallbackUser = {
     userId: cacheKey,
     username: currentUser,
     teamId: cacheKey,
     metadata: {
       source: 'portal-derived',
-      fallback: true
+      fallback: true,
+      syncedFromPortal: records.length > 0
     }
   };
   const fallbackTeam = {
@@ -400,12 +427,30 @@ async function getOrRefreshCurrentUserCache() {
   };
   const fallbackStats = {
     teamId: cacheKey,
-    stats: portalStats || { fallback: true },
+    stats: {
+      source: 'previous-registration',
+      entries: records.length,
+      currentUserEntries: portalCounts.currentUserEntries,
+      teamEntries: portalCounts.teamEntries,
+      teamIdentity: portalCounts.teamIdentity || null,
+      fallback: true
+    },
     lastUpdatedAt: new Date().toISOString()
   };
 
-  await cacheUserTeamToBackend({ user: fallbackUser, team: fallbackTeam, stats: fallbackStats });
-  return { user: fallbackUser, team: fallbackTeam, stats: fallbackStats };
+  console.log('[JawwalPay UX+] Final portal cache payload', {
+    currentUser,
+    teamId: cacheKey,
+    recordCount: records.length,
+    stats: fallbackStats.stats
+  });
+
+  const persisted = await cacheUserTeamToBackend({ user: fallbackUser, team: fallbackTeam, stats: fallbackStats, records });
+  console.log('[JawwalPay UX+] Backend upload result', {
+    uploaded: Boolean(persisted),
+    persisted
+  });
+  return { user: fallbackUser, team: fallbackTeam, stats: fallbackStats, records };
 }
 
 async function ensureCacheDB() {
