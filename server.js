@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const crypto = require('crypto');
 const { createDatabase } = require('./db');
 
 const app = express();
@@ -280,11 +281,9 @@ app.delete('/users/:userId', async (req, res) => {
 app.post('/users', async (req, res) => {
   ensureDb();
   const { userId, username, teamId, metadata } = req.body;
-  if (!userId) {
-    return res.status(400).json({ error: 'userId is required' });
-  }
+  const resolvedUserId = String(userId || crypto.randomUUID());
 
-  const user = await upsertItem('users', 'userId', String(userId), {
+  const user = await upsertItem('users', 'userId', resolvedUserId, {
     username: username || null,
     teamId: teamId || null,
     metadata: metadata || null
@@ -321,11 +320,9 @@ app.delete('/teams/:teamId', async (req, res) => {
 app.post('/teams', async (req, res) => {
   ensureDb();
   const { teamId, name, metadata } = req.body;
-  if (!teamId) {
-    return res.status(400).json({ error: 'teamId is required' });
-  }
+  const resolvedTeamId = String(teamId || crypto.randomUUID());
 
-  const team = await upsertItem('teams', 'teamId', String(teamId), {
+  const team = await upsertItem('teams', 'teamId', resolvedTeamId, {
     name: name || null,
     metadata: metadata || null
   });
@@ -346,11 +343,9 @@ app.get('/records/:recordId', async (req, res) => {
 app.post('/records', async (req, res) => {
   ensureDb();
   const { recordId, userId, teamId, payload } = req.body;
-  if (!recordId) {
-    return res.status(400).json({ error: 'recordId is required' });
-  }
+  const resolvedRecordId = String(recordId || crypto.randomUUID());
 
-  const record = await upsertItem('records', 'recordId', String(recordId), {
+  const record = await upsertItem('records', 'recordId', resolvedRecordId, {
     userId: userId || null,
     teamId: teamId || null,
     payload: payload || null
