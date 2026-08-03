@@ -276,7 +276,13 @@ async function ensureTeamExists(teamId) {
   if (existingTeam) return existingTeam;
   return await upsertItem('teams', 'teamId', String(teamId), {
     name: null,
-    metadata: null
+    totalRecords: 0,
+    approvedCount: 0,
+    pendingCount: 0,
+    rejectedCount: 0,
+    otherCount: 0,
+    memberCount: 0,
+    lastSummaryAt: null
   });
 }
 
@@ -290,7 +296,12 @@ async function ensureUserExists(userId, teamId = null) {
   return await upsertItem('users', 'userId', String(userId), {
     username: null,
     teamId: teamId || null,
-    metadata: null
+    totalRecords: 0,
+    approvedCount: 0,
+    pendingCount: 0,
+    rejectedCount: 0,
+    otherCount: 0,
+    lastSeenSummaryAt: null
   });
 }
 
@@ -567,25 +578,21 @@ app.post('/api/registration-summary', async (req, res) => {
             // Ensure user exists and update username/team association + metadata
             const existingUser = await findItem('users', 'userId', username);
             const statusSummary = summarizeStatusCounts(agent?.byStatus || {});
-            const userMetadata = Object.assign({}, existingUser && existingUser.metadata ? existingUser.metadata : {}, {
-              lastSeenSummaryAt: generatedAt,
-              lastIngestedAt: ingestMeta.receivedAt,
-              totalCount: Number(agent?.totalCount || statusSummary.total || 0),
+            const userRecord = {
+              username: username || null,
+              teamId: teamId || null,
+              totalRecords: Number(agent?.totalCount || statusSummary.total || 0),
               approvedCount: statusSummary.approved,
               pendingCount: statusSummary.pending,
               rejectedCount: statusSummary.rejected,
-              topStatus: statusSummary.topStatus,
-              ingest: ingestMeta
-            });
+              otherCount: statusSummary.other,
+              lastSeenSummaryAt: generatedAt
+            };
 
             if (!existingUser) {
-              await upsertItem('users', 'userId', String(username), {
-                username: username || null,
-                teamId: teamId || null,
-                metadata: userMetadata
-              });
+              await upsertItem('users', 'userId', String(username), userRecord);
             } else {
-              const merged = Object.assign({}, existingUser, { teamId: existingUser.teamId || teamId, metadata: userMetadata });
+              const merged = Object.assign({}, existingUser, userRecord);
               await upsertItem('users', 'userId', String(username), merged);
             }
 
@@ -633,18 +640,21 @@ app.post('/api/registration-summary', async (req, res) => {
             stats: stats || null,
             lastUpdatedAt: nowIso()
           });
-          // update team metadata with aggregated values
+          // update team counters with aggregated values
           try {
             const team = await findItem('teams', 'teamId', String(teamId));
-            const teamMeta = Object.assign({}, team && team.metadata ? team.metadata : {}, {
-              lastSummaryAt: generatedAt,
-              lastIngestAt: ingestMeta.receivedAt,
-              memberCount: Array.isArray(stats.agents) ? stats.agents.length : 0,
-              totalRecords: Number(stats.totalRecords || 0)
+            const teamUpdate = Object.assign({}, team || {}, {
+              name: team && team.name ? team.name : null,
+              totalRecords: Number(stats.totalRecords || 0) || (team && team.totalRecords) || 0,
+              approvedCount: Number(stats.agents?.reduce((s,a)=>s + (Number(a.byStatus?.['تمت الموافقة']||a.byStatus?.['approved']||0),0),0) || 0) || (team && team.approvedCount) || 0,
+              pendingCount: Number(stats.agents?.reduce((s,a)=>s + (Number(a.byStatus?.['قيد المراجعة']||a.byStatus?.['pending']||0),0),0) || 0) || (team && team.pendingCount) || 0,
+              rejectedCount: Number(stats.agents?.reduce((s,a)=>s + (Number(a.byStatus?.['مرفوض']||a.byStatus?.['rejected']||0),0),0) || 0) || (team && team.rejectedCount) || 0,
+              memberCount: Array.isArray(stats.agents) ? stats.agents.length : (team && team.memberCount) || 0,
+              lastSummaryAt: generatedAt
             });
-            await upsertItem('teams', 'teamId', String(teamId), { name: team && team.name ? team.name : null, metadata: teamMeta });
+            await upsertItem('teams', 'teamId', String(teamId), teamUpdate);
           } catch (uerr) {
-            /* ignore team metadata update errors */
+            /* ignore team update errors */
           }
         } catch (tErr) {
           console.error('[Cache API] failed to persist teamStats for', teamId, tErr?.message || tErr);
