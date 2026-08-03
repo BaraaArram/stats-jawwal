@@ -149,6 +149,17 @@ async function ensureCurrentSchema(pool) {
 
   await ensureForeignKeyConstraints(pool);
 
+  // Migration: ensure `summaryId` column and unique index exist for registrationSummaries
+  try {
+    await pool.query(`ALTER TABLE registrationSummaries ADD COLUMN IF NOT EXISTS summaryId text;`);
+    // populate legacy rows with a stable id (use generatedAt text when present)
+    await pool.query(`UPDATE registrationSummaries SET summaryId = COALESCE(summaryId, to_char(generatedAt, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) WHERE summaryId IS NULL;`);
+    // create a unique index to allow ON CONFLICT (summaryId)
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS registrationsummaries_summaryid_idx ON registrationSummaries (summaryId);`);
+  } catch (mErr) {
+    console.warn('Failed to migrate registrationSummaries schema:', mErr.message || mErr);
+  }
+
   const indexStatements = [
     `CREATE INDEX IF NOT EXISTS records_userid_idx ON records (userId);`,
     `CREATE INDEX IF NOT EXISTS records_teamid_idx ON records (teamId);`,
