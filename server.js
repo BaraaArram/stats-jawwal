@@ -307,6 +307,37 @@ app.post('/team-stats', async (req, res) => {
   res.json({ stats: teamStat });
 });
 
+app.post('/api/registration-summary', async (req, res) => {
+  ensureDb();
+  const summary = req.body;
+  if (!summary || typeof summary !== 'object') {
+    return res.status(400).json({ error: 'summary payload is required' });
+  }
+
+  const generatedAt = summary.generatedAt || new Date().toISOString();
+  const totalRecords = Number(summary.totalRecords ?? null);
+  const agents = Array.isArray(summary.agents) ? summary.agents : [];
+
+  const stored = await upsertItem('registrationSummaries', 'generatedAt', generatedAt, {
+    payload: summary,
+    totalRecords: Number.isNaN(totalRecords) ? null : totalRecords,
+    agents,
+    updatedAt: new Date().toISOString()
+  });
+
+  await db.write();
+  res.json({ summary: stored });
+});
+
+app.get('/api/registration-summary', async (req, res) => {
+  ensureDb();
+  if (typeof db.listCollection === 'function') {
+    const summaries = await listCollection('registrationSummaries');
+    return res.json({ summaries });
+  }
+  return res.status(500).json({ error: 'Registration summary list not available' });
+});
+
 app.get('/user-team/:userId', async (req, res) => {
   ensureDb();
   const user = await findItem('users', 'userId', req.params.userId);
