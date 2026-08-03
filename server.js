@@ -451,17 +451,46 @@ app.post('/api/registration-summary', async (req, res) => {
 
   const generatedAt = summary.generatedAt || new Date().toISOString();
   const totalRecords = Number(summary.totalRecords ?? null);
-  const agents = Array.isArray(summary.agents) ? summary.agents : [];
+  // Defensive normalization: ensure agents and payload are proper objects/arrays.
+  let agents = [];
+  try {
+    if (Array.isArray(summary.agents)) {
+      agents = summary.agents;
+    } else if (typeof summary.agents === 'string') {
+      try { agents = JSON.parse(summary.agents); } catch { agents = []; }
+      if (!Array.isArray(agents)) agents = [];
+    } else {
+      agents = [];
+    }
+  } catch (e) {
+    console.error('[Cache API] failed to normalize agents', e?.message || e);
+    agents = [];
+  }
 
-  const stored = await upsertItem('registrationSummaries', 'generatedAt', generatedAt, {
-    payload: summary,
-    totalRecords: Number.isNaN(totalRecords) ? null : totalRecords,
-    agents,
-    updatedAt: new Date().toISOString()
-  });
+  // Ensure payload is a JSON object (not a double-encoded string)
+  let payloadForStore = summary.payload ?? summary;
+  try {
+    if (typeof payloadForStore === 'string') {
+      try { payloadForStore = JSON.parse(payloadForStore); } catch { /* leave as string */ }
+    }
+  } catch (e) {
+    console.error('[Cache API] failed to normalize payload', e?.message || e);
+  }
 
-  await db.write();
-  res.json({ summary: stored });
+  try {
+    const stored = await upsertItem('registrationSummaries', 'generatedAt', generatedAt, {
+      payload: payloadForStore,
+      totalRecords: Number.isNaN(totalRecords) ? null : totalRecords,
+      agents,
+      updatedAt: new Date().toISOString()
+    });
+
+    await db.write();
+    return res.json({ summary: stored });
+  } catch (dbErr) {
+    console.error('[Cache API] registration-summary DB upsert failed', { error: dbErr?.message || dbErr, generatedAt, totalRecords, agentsType: Array.isArray(agents) ? 'array' : typeof agents, payloadType: typeof payloadForStore, payloadPreview: (() => { try { return JSON.stringify(payloadForStore).slice(0, 2000); } catch { return String(payloadForStore).slice(0,2000); } })() });
+    return res.status(500).json({ error: 'Failed to persist registration summary', details: dbErr?.message || String(dbErr) });
+  }
 });
 
 app.get('/api/registration-summary', async (req, res) => {
