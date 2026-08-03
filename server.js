@@ -8,8 +8,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.json');
 
-app.use(cors());
-app.use(express.json());
+app.use(cors({ origin: true, credentials: true }));
+app.options('*', cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 let db = null;
@@ -250,6 +251,30 @@ async function deleteTeamAndRelatedData(teamId) {
   return { deletedTeam, deletedUsers, deletedRecords, deletedTeamStats };
 }
 
+async function ensureTeamExists(teamId) {
+  if (!teamId) return null;
+  const existingTeam = await findItem('teams', 'teamId', String(teamId));
+  if (existingTeam) return existingTeam;
+  return await upsertItem('teams', 'teamId', String(teamId), {
+    name: null,
+    metadata: null
+  });
+}
+
+async function ensureUserExists(userId, teamId = null) {
+  if (!userId) return null;
+  const existingUser = await findItem('users', 'userId', String(userId));
+  if (existingUser) return existingUser;
+  if (teamId) {
+    await ensureTeamExists(teamId);
+  }
+  return await upsertItem('users', 'userId', String(userId), {
+    username: null,
+    teamId: teamId || null,
+    metadata: null
+  });
+}
+
 function ensureDb() {
   if (!db) {
     throw new Error('Database is not initialized');
@@ -440,59 +465,85 @@ app.get('/user-team/:userId', async (req, res) => {
 
 app.post('/cache/refresh', async (req, res) => {
   ensureDb();
+  if (!req.body || typeof req.body !== 'object') {
+    return res.status(400).json({ error: 'Invalid JSON body for cache refresh' });
+  }
+
   const { user, users, team, stats, records } = req.body;
+  if (!user && !users && !team && !stats && !records) {
+    return res.status(400).json({ error: 'Cache refresh payload must include user, users, team, stats, or records' });
+  }
+
   const result = {};
 
-  if (user && user.userId) {
-    result.user = await upsertItem('users', 'userId', String(user.userId), {
-      username: user.username || null,
-      teamId: user.teamId || null,
-      metadata: user.metadata || null
-    });
-  }
-
-  if (Array.isArray(users) && users.length > 0) {
-    result.users = [];
-    for (const item of users) {
-      if (!item || !item.userId) continue;
-      const persistedUser = await upsertItem('users', 'userId', String(item.userId), {
-        username: item.username || null,
-        teamId: item.teamId || null,
-        metadata: item.metadata || null
+  try {
+    if (team && team.teamId) {
+      result.team = await upsertItem('teams', 'teamId', String(team.teamId), {
+        name: team.name || null,
+        metadata: team.metadata || null
       });
-      result.users.push(persistedUser);
     }
-  }
 
-  if (team && team.teamId) {
-    result.team = await upsertItem('teams', 'teamId', String(team.teamId), {
-      name: team.name || null,
-      metadata: team.metadata || null
-    });
-  }
-
-  if (stats && stats.teamId) {
-    result.teamStats = await upsertItem('teamStats', 'teamId', String(stats.teamId), {
-      stats: stats.stats || null,
-      lastUpdatedAt: stats.lastUpdatedAt || nowIso()
-    });
-  }
-
-  if (Array.isArray(records) && records.length > 0) {
-    result.records = [];
-    for (const record of records) {
-      const recordId = record?.recordId || `${team?.teamId || user?.userId || 'record'}-${result.records.length + 1}`;
-      const persistedRecord = await upsertItem('records', 'recordId', String(recordId), {
-        userId: record?.userId || user?.userId || null,
-        teamId: record?.teamId || team?.teamId || null,
-        payload: record?.payload || record || null
+    if (stats && stats.teamId) {
+      await ensureTeamExists(stats.teamId);
+      result.teamStats = await upsertItem('teamStats', 'teamId', String(stats.teamId), {
+        stats: stats.stats || null,
+        lastUpdatedAt: stats.lastUpdatedAt || nowIso()
       });
-      result.records.push(persistedRecord);
     }
-  }
 
-  await db.write();
-  res.json(result);
+    if (user && user.teamId) {
+      await ensureTeamExists(user.teamId);
+    }
+    if (user && user.userId) {
+      result.user = await upsertItem('users', 'userId', String(user.userId), {
+        username: user.username || null,
+        teamId: user.teamId || null,
+        metadata: user.metadata || null
+      });
+    }
+
+    if (Array.isArray(users) && users.length > 0) {
+      result.users = [];
+      for (const item of users) {
+        if (!item || !item.userId) continue;
+        if (item.teamId) {
+          await ensureTeamExists(item.teamId);
+        }
+        const persistedUser = await upsertItem('users', 'userId', String(item.userId), {
+          username: item.username || null,
+          teamId: item.teamId || null,
+          metadata: item.metadata || null
+        });
+        result.users.push(persistedUser);
+      }
+    }
+
+    if (Array.isArray(records) && records.length > 0) {
+      result.records = [];
+      for (const record of records) {
+        if (record?.teamId) {
+          await ensureTeamExists(record.teamId);
+        }
+        if (record?.userId) {
+          await ensureUserExists(record.userId, record.teamId || team?.teamId || user?.teamId);
+        }
+        const recordId = record?.recordId || `${team?.teamId || user?.userId || 'record'}-${result.records.length + 1}`;
+        const persistedRecord = await upsertItem('records', 'recordId', String(recordId), {
+          userId: record?.userId || user?.userId || null,
+          teamId: record?.teamId || team?.teamId || null,
+          payload: record?.payload || record || null
+        });
+        result.records.push(persistedRecord);
+      }
+    }
+
+    await db.write();
+    return res.json(result);
+  } catch (error) {
+    console.error('Cache refresh failed:', error);
+    return res.status(500).json({ error: 'Cache refresh failed', details: error.message });
+  }
 });
 
 initializeDatabase().then(() => {

@@ -88,7 +88,7 @@ async function createPgDatabase(connectionString) {
 }
 
 async function cleanUpLegacyTables(pool) {
-  const legacyTables = ['user', 'team', 'records', 'team_stats', 'registration_summary', 'user_stats', 'record', 'registrations'];
+  const legacyTables = ['"user"', 'team', 'records', 'team_stats', 'registration_summary', 'user_stats', 'record', 'registrations'];
   for (const table of legacyTables) {
     try {
       await pool.query(`DROP TABLE IF EXISTS ${table}`);
