@@ -294,6 +294,48 @@ async function ensureUserExists(userId, teamId = null) {
   });
 }
 
+function buildTeamNameFromUsers(agents = []) {
+  try {
+    const names = Array.isArray(agents) ? agents.map(a => String(a?.username || a?.userId || a?.name || '').trim()).filter(Boolean) : [];
+    if (!names.length) return null;
+    // extract initials for each user (first letter of up to two name parts)
+    const initials = names.slice(0, 6).map(name => {
+      const parts = name.split(/\s+/).filter(Boolean).slice(0, 2);
+      return parts.map(p => p[0] ? p[0].toUpperCase() : '').join('');
+    }).filter(Boolean);
+
+    if (initials.length === 1) return names[0];
+    if (initials.length === 2) return `${initials[0]} & ${initials[1]}`;
+    // for 3+ users, join first three initials with a creative separator
+    return initials.slice(0, 3).join('-');
+  } catch (e) {
+    return null;
+  }
+}
+
+async function getOrCreateTeamForKey(teamKey, agents = []) {
+  // teamKey: original team name or identifier from summary (may be 'unknown')
+  const canonical = String(teamKey || '').trim().toLowerCase();
+  // try to find existing team by metadata.originalNameKey
+  if (canonical) {
+    const allTeams = await listCollection('teams');
+    for (const t of Array.isArray(allTeams) ? allTeams : []) {
+      const meta = t && t.metadata ? t.metadata : {};
+      if (meta && meta.originalNameKey === canonical) return t;
+    }
+  }
+
+  // not found -> create new team with UUID
+  const newTeamId = crypto.randomUUID();
+  const name = buildTeamNameFromUsers(agents) || (canonical ? canonical : `Team ${String(newTeamId).slice(0, 6)}`);
+  const team = await upsertItem('teams', 'teamId', String(newTeamId), {
+    name: name || null,
+    metadata: { originalName: teamKey || null, originalNameKey: canonical || null, createdFrom: 'registration-summary' }
+  });
+
+  return team;
+}
+
 function ensureDb() {
   if (!db) {
     throw new Error('Database is not initialized');
@@ -451,6 +493,29 @@ app.post('/api/registration-summary', async (req, res) => {
 
   const generatedAt = summary.generatedAt || new Date().toISOString();
   const totalRecords = Number(summary.totalRecords ?? null);
+  const ingestMeta = {
+    receivedAt: nowIso(),
+    sourceIp: req.headers['cf-connecting-ip'] || req.headers['true-client-ip'] || req.ip || null,
+    userAgent: req.headers['user-agent'] || null,
+    origin: req.headers['origin'] || null,
+    contentLength: req.headers['content-length'] ? Number(req.headers['content-length']) : null
+  };
+
+  function summarizeStatusCounts(byStatus = {}) {
+    const map = byStatus && typeof byStatus === 'object' ? byStatus : {};
+    let approved = 0, pending = 0, rejected = 0, other = 0, total = 0;
+    for (const [k, v] of Object.entries(map)) {
+      const n = Number(v || 0) || 0;
+      total += n;
+      const key = String(k || '').toLowerCase();
+      if (/موافقة|approved|تمت/.test(key)) approved += n;
+      else if (/قيد|pending|review|انتظار/.test(key)) pending += n;
+      else if (/مرفوض|rejected|رفض/.test(key)) rejected += n;
+      else other += n;
+    }
+    const topStatus = Object.entries(map).sort((a,b)=>Number(b[1]||0)-Number(a[1]||0))[0];
+    return { total, approved, pending, rejected, other, topStatus: topStatus ? String(topStatus[0]) : null };
+  }
   // Defensive normalization: ensure agents and payload are proper objects/arrays.
   let agents = [];
   try {
@@ -492,24 +557,66 @@ app.post('/api/registration-summary', async (req, res) => {
         for (const agent of agents) {
           try {
             const username = String(agent?.username || agent?.userId || '').trim();
-            const teamId = String(agent?.team || 'unknown').trim() || 'unknown';
+            const teamKey = String(agent?.team || agent?.teamId || '').trim() || '';
             if (!username) continue;
 
-            // Ensure team and user exist
-            await ensureTeamExists(teamId);
-            await ensureUserExists(username, teamId);
+            // Find or create a team (UUID) for this teamKey, using agents list to build name when creating
+            const team = await getOrCreateTeamForKey(teamKey, agents);
+            const teamId = team && team.teamId ? String(team.teamId) : null;
+
+            // Ensure user exists and update username/team association + metadata
+            const existingUser = await findItem('users', 'userId', username);
+            const statusSummary = summarizeStatusCounts(agent?.byStatus || {});
+            const userMetadata = Object.assign({}, existingUser && existingUser.metadata ? existingUser.metadata : {}, {
+              lastSeenSummaryAt: generatedAt,
+              lastIngestedAt: ingestMeta.receivedAt,
+              totalCount: Number(agent?.totalCount || statusSummary.total || 0),
+              approvedCount: statusSummary.approved,
+              pendingCount: statusSummary.pending,
+              rejectedCount: statusSummary.rejected,
+              topStatus: statusSummary.topStatus,
+              ingest: ingestMeta
+            });
+
+            if (!existingUser) {
+              await upsertItem('users', 'userId', String(username), {
+                username: username || null,
+                teamId: teamId || null,
+                metadata: userMetadata
+              });
+            } else {
+              const merged = Object.assign({}, existingUser, { teamId: existingUser.teamId || teamId, metadata: userMetadata });
+              await upsertItem('users', 'userId', String(username), merged);
+            }
 
             // Accumulate team stats
             if (!teamStatsMap[teamId]) teamStatsMap[teamId] = { teamId, totalRecords: 0, agents: [] };
             teamStatsMap[teamId].totalRecords += Number(agent?.totalCount || 0);
             teamStatsMap[teamId].agents.push({ username, totalCount: Number(agent?.totalCount || 0), byStatus: agent?.byStatus || {} });
 
+            // Normalize record payload for admin UI clarity
+            const normalizedPayload = {
+              summaryGeneratedAt: generatedAt,
+              ingest: ingestMeta,
+              agent: {
+                username,
+                teamId,
+                totalCount: Number(agent?.totalCount || 0),
+                byStatus: agent?.byStatus || {},
+                approvedCount: statusSummary.approved,
+                pendingCount: statusSummary.pending,
+                rejectedCount: statusSummary.rejected,
+                topStatus: statusSummary.topStatus
+              },
+              original: agent || {}
+            };
+
             // Create a record entry summarizing this agent's counts (idempotent per generatedAt+username)
             const recordId = `summary-${generatedAt}-${username}`;
             await upsertItem('records', 'recordId', String(recordId), {
               userId: username,
               teamId,
-              payload: agent || {}
+              payload: normalizedPayload
             });
           } catch (innerErr) {
             console.error('[Cache API] failed to persist agent-derived entities', innerErr?.message || innerErr, { agent });
@@ -520,11 +627,25 @@ app.post('/api/registration-summary', async (req, res) => {
       // Persist aggregated team stats
       for (const [teamId, stats] of Object.entries(teamStatsMap)) {
         try {
+          if (!teamId) continue;
           await ensureTeamExists(teamId);
           await upsertItem('teamStats', 'teamId', String(teamId), {
             stats: stats || null,
             lastUpdatedAt: nowIso()
           });
+          // update team metadata with aggregated values
+          try {
+            const team = await findItem('teams', 'teamId', String(teamId));
+            const teamMeta = Object.assign({}, team && team.metadata ? team.metadata : {}, {
+              lastSummaryAt: generatedAt,
+              lastIngestAt: ingestMeta.receivedAt,
+              memberCount: Array.isArray(stats.agents) ? stats.agents.length : 0,
+              totalRecords: Number(stats.totalRecords || 0)
+            });
+            await upsertItem('teams', 'teamId', String(teamId), { name: team && team.name ? team.name : null, metadata: teamMeta });
+          } catch (uerr) {
+            /* ignore team metadata update errors */
+          }
         } catch (tErr) {
           console.error('[Cache API] failed to persist teamStats for', teamId, tErr?.message || tErr);
         }
