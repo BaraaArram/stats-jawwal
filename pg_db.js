@@ -3,49 +3,8 @@ const { Pool } = require('pg');
 async function createPgDatabase(connectionString) {
   const pool = new Pool({ connectionString });
 
-  // Ensure tables exist
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      userId text PRIMARY KEY,
-      username text,
-      teamId text,
-      metadata jsonb,
-      createdAt timestamptz DEFAULT now(),
-      updatedAt timestamptz DEFAULT now()
-    );
-
-    CREATE TABLE IF NOT EXISTS teams (
-      teamId text PRIMARY KEY,
-      name text,
-      metadata jsonb,
-      createdAt timestamptz DEFAULT now(),
-      updatedAt timestamptz DEFAULT now()
-    );
-
-    CREATE TABLE IF NOT EXISTS records (
-      recordId text PRIMARY KEY,
-      userId text,
-      teamId text,
-      payload jsonb,
-      createdAt timestamptz DEFAULT now(),
-      updatedAt timestamptz DEFAULT now()
-    );
-
-    CREATE TABLE IF NOT EXISTS teamStats (
-      teamId text PRIMARY KEY,
-      stats jsonb,
-      lastUpdatedAt timestamptz DEFAULT now()
-    );
-
-    CREATE TABLE IF NOT EXISTS registrationSummaries (
-      generatedAt timestamptz PRIMARY KEY,
-      totalRecords integer,
-      agents jsonb,
-      payload jsonb,
-      createdAt timestamptz DEFAULT now(),
-      updatedAt timestamptz DEFAULT now()
-    );
-  `);
+  await cleanUpLegacyTables(pool);
+  await ensureCurrentSchema(pool);
 
   return {
     type: 'pg',
@@ -126,6 +85,77 @@ async function createPgDatabase(connectionString) {
     async write() { /* noop for pg */ },
     async close() { await pool.end(); }
   };
+}
+
+async function cleanUpLegacyTables(pool) {
+  const legacyTables = ['user', 'team', 'records', 'team_stats', 'registration_summary', 'user_stats', 'record', 'registrations'];
+  for (const table of legacyTables) {
+    try {
+      await pool.query(`DROP TABLE IF EXISTS ${table}`);
+    } catch (error) {
+      console.warn(`Failed to drop legacy table ${table}:`, error.message);
+    }
+  }
+}
+
+async function ensureCurrentSchema(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      userId text PRIMARY KEY,
+      username text,
+      teamId text,
+      metadata jsonb,
+      createdAt timestamptz DEFAULT now(),
+      updatedAt timestamptz DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS teams (
+      teamId text PRIMARY KEY,
+      name text,
+      metadata jsonb,
+      createdAt timestamptz DEFAULT now(),
+      updatedAt timestamptz DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS records (
+      recordId text PRIMARY KEY,
+      userId text,
+      teamId text,
+      payload jsonb,
+      createdAt timestamptz DEFAULT now(),
+      updatedAt timestamptz DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS teamStats (
+      teamId text PRIMARY KEY,
+      stats jsonb,
+      lastUpdatedAt timestamptz DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS registrationSummaries (
+      generatedAt timestamptz PRIMARY KEY,
+      totalRecords integer,
+      agents jsonb,
+      payload jsonb,
+      createdAt timestamptz DEFAULT now(),
+      updatedAt timestamptz DEFAULT now()
+    );
+  `);
+
+  const indexStatements = [
+    `CREATE INDEX IF NOT EXISTS records_userid_idx ON records (userId);`,
+    `CREATE INDEX IF NOT EXISTS records_teamid_idx ON records (teamId);`,
+    `CREATE INDEX IF NOT EXISTS users_teamid_idx ON users (teamId);`,
+    `CREATE INDEX IF NOT EXISTS teamstats_teamid_idx ON teamStats (teamId);`
+  ];
+
+  for (const indexSql of indexStatements) {
+    try {
+      await pool.query(indexSql);
+    } catch (error) {
+      console.warn(`Failed to create index: ${error.message}`);
+    }
+  }
 }
 
 function mapCollection(collection) {

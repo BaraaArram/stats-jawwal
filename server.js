@@ -188,6 +188,51 @@ async function deleteCollectionItem(collection, key, value) {
   return null;
 }
 
+async function deleteRecordsByUser(userId) {
+  if (!userId) return [];
+  const records = await filterItems('records', 'userId', userId);
+  const deletedRecords = [];
+
+  for (const record of records) {
+    if (!record || !record.recordId) continue;
+    const removedRecord = await deleteCollectionItem('records', 'recordId', String(record.recordId));
+    if (removedRecord) {
+      deletedRecords.push(removedRecord);
+    }
+  }
+
+  return deletedRecords;
+}
+
+async function deleteUsersByTeam(teamId) {
+  if (!teamId) return { deletedUsers: [], deletedRecords: [] };
+  const users = await filterItems('users', 'teamId', teamId);
+  const deletedUsers = [];
+  const deletedRecords = [];
+
+  for (const user of users) {
+    if (!user || !user.userId) continue;
+    const removedUser = await deleteCollectionItem('users', 'userId', String(user.userId));
+    if (removedUser) {
+      deletedUsers.push(removedUser);
+      const records = await deleteRecordsByUser(String(user.userId));
+      deletedRecords.push(...records);
+    }
+  }
+
+  return { deletedUsers, deletedRecords };
+}
+
+async function deleteTeamAndRelatedData(teamId) {
+  if (!teamId) return { deletedTeam: null, deletedUsers: [], deletedRecords: [], deletedTeamStats: null };
+
+  const deletedTeam = await deleteCollectionItem('teams', 'teamId', String(teamId));
+  const deletedTeamStats = await deleteCollectionItem('teamStats', 'teamId', String(teamId));
+  const { deletedUsers, deletedRecords } = await deleteUsersByTeam(teamId);
+
+  return { deletedTeam, deletedUsers, deletedRecords, deletedTeamStats };
+}
+
 function ensureDb() {
   if (!db) {
     throw new Error('Database is not initialized');
@@ -201,6 +246,19 @@ app.get('/users/:userId', async (req, res) => {
     return res.status(404).json({ error: 'User not found' });
   }
   res.json({ user });
+});
+
+app.delete('/users/:userId', async (req, res) => {
+  ensureDb();
+  const { userId } = req.params;
+  const user = await findItem('users', 'userId', userId);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  const deletedRecords = await deleteRecordsByUser(userId);
+  const deletedUser = await deleteCollectionItem('users', 'userId', userId);
+  return res.json({ deletedUser, deletedRecords });
 });
 
 app.post('/users', async (req, res) => {
@@ -227,6 +285,21 @@ app.get('/teams/:teamId', async (req, res) => {
     return res.status(404).json({ error: 'Team not found' });
   }
   res.json({ team });
+});
+
+app.delete('/teams/:teamId', async (req, res) => {
+  ensureDb();
+  const { teamId } = req.params;
+  const result = await deleteTeamAndRelatedData(teamId);
+  if (!result.deletedTeam) {
+    return res.status(404).json({ error: 'Team not found' });
+  }
+  res.json({
+    deletedTeam: result.deletedTeam,
+    deletedTeamStats: result.deletedTeamStats,
+    deletedUsers: result.deletedUsers,
+    deletedRecords: result.deletedRecords
+  });
 });
 
 app.post('/teams', async (req, res) => {
