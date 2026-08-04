@@ -487,6 +487,13 @@ async function getOrCreateTeamForKey(teamKey, agents = []) {
   return team;
 }
 
+async function getRecordTeamIdForRow(normalizedRow, agents = []) {
+  const teamKey = String(normalizedRow.regAgentName || normalizedRow.agentRegion || normalizedRow.agent || '').trim();
+  if (!teamKey) return null;
+  const team = await getOrCreateTeamForKey(teamKey, agents);
+  return team?.teamId || null;
+}
+
 function ensureDb() {
   if (!db) {
     throw new Error('Database is not initialized');
@@ -790,6 +797,7 @@ app.post('/api/registration-summary', async (req, res) => {
       }
 
       const summaryRows = getSummaryRows(summary);
+      console.error('[Cache API] registration-summary row count', { rows: Array.isArray(summaryRows) ? summaryRows.length : 0, payloadKeys: Object.keys(summary || {}) });
       if (Array.isArray(summaryRows) && summaryRows.length) {
         for (let rowIndex = 0; rowIndex < summaryRows.length; rowIndex += 1) {
           const rawRow = summaryRows[rowIndex];
@@ -802,6 +810,7 @@ app.post('/api/registration-summary', async (req, res) => {
           const status = String(normalizedRow.customerStatus || normalizedRow.status || 'unknown');
           const statusSummary = summarizeStatusCounts({ [status]: 1 });
           const recordId = String(normalizedRow.id || `${generatedAt}-${username}-${rowIndex}`);
+          console.error('[Cache API] creating record', { recordId, username, teamId, normalizedRow });
 
           await upsertItem('records', 'recordId', recordId, {
             userId: username,
@@ -839,6 +848,7 @@ app.post('/api/registration-summary', async (req, res) => {
       // Persist aggregated team stats
       for (const [teamId, stats] of Object.entries(teamStatsMap)) {
         try {
+          console.error('[Cache API] persisting teamStats', { teamId, stats });
           if (!teamId) continue;
           await ensureTeamExists(teamId);
           await upsertItem('teamStats', 'teamId', String(teamId), {
