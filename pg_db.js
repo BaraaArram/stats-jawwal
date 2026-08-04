@@ -132,9 +132,9 @@ async function createPgDatabase(connectionString) {
       }
 
       if (collection === 'records') {
-        const q = `INSERT INTO records (recordId, userId, teamId, fullName, customerIdNumber, mobileNumber, creationDate, submissionDate, approvalDate, regAgentName, customerStatus, regAgentDeviceName, allowEdit, payload, createdAt, updatedAt)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now())
-          ON CONFLICT (recordId) DO UPDATE SET userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, fullName = EXCLUDED.fullName, customerIdNumber = EXCLUDED.customerIdNumber, mobileNumber = EXCLUDED.mobileNumber, creationDate = EXCLUDED.creationDate, submissionDate = EXCLUDED.submissionDate, approvalDate = EXCLUDED.approvalDate, regAgentName = EXCLUDED.regAgentName, customerStatus = EXCLUDED.customerStatus, regAgentDeviceName = EXCLUDED.regAgentDeviceName, allowEdit = EXCLUDED.allowEdit, payload = EXCLUDED.payload, updatedAt = now()
+        const q = `INSERT INTO records (recordId, userId, teamId, fullName, customerIdNumber, mobileNumber, creationDate, submissionDate, approvalDate, regAgentName, customerStatus, regAgentDeviceName, allowEdit, createdAt, updatedAt)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),now())
+          ON CONFLICT (recordId) DO UPDATE SET userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, fullName = EXCLUDED.fullName, customerIdNumber = EXCLUDED.customerIdNumber, mobileNumber = EXCLUDED.mobileNumber, creationDate = EXCLUDED.creationDate, submissionDate = EXCLUDED.submissionDate, approvalDate = EXCLUDED.approvalDate, regAgentName = EXCLUDED.regAgentName, customerStatus = EXCLUDED.customerStatus, regAgentDeviceName = EXCLUDED.regAgentDeviceName, allowEdit = EXCLUDED.allowEdit, updatedAt = now()
           RETURNING *`;
         const res = await executeQuery(q, [
           String(value),
@@ -149,8 +149,7 @@ async function createPgDatabase(connectionString) {
           item.regAgentName || null,
           item.customerStatus || null,
           item.regAgentDeviceName || null,
-          item.allowEdit != null ? String(item.allowEdit) : null,
-          item.payload ? JSON.stringify(item.payload) : null
+          item.allowEdit != null ? String(item.allowEdit) : null
         ]);
         return normalizeRow('records', res.rows[0]);
       }
@@ -257,7 +256,6 @@ async function ensureCurrentSchema(pool) {
       customerStatus text,
       regAgentDeviceName text,
       allowEdit text,
-      payload jsonb,
       createdAt timestamptz DEFAULT now(),
       updatedAt timestamptz DEFAULT now(),
       CONSTRAINT records_user_fk FOREIGN KEY (userId) REFERENCES users(userId) ON DELETE CASCADE,
@@ -335,6 +333,7 @@ async function ensureCurrentSchema(pool) {
     await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS customerStatus text;`);
     await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS regAgentDeviceName text;`);
     await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS allowEdit text;`);
+    await executeDbQuery(pool, `ALTER TABLE records DROP COLUMN IF EXISTS payload;`);
   } catch (mErr) {
     console.warn('Failed to migrate users/teams schema:', mErr.message || mErr);
   }

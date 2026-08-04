@@ -1070,8 +1070,7 @@ app.post('/cache/refresh', async (req, res) => {
             regAgentName: record?.regAgentName || record?.agentRegion || record?.agentName || record?.agent || null,
             customerStatus: record?.customerStatus || record?.status || null,
             regAgentDeviceName: record?.regAgentDeviceName || record?.agentDeviceName || record?.agentName || null,
-            allowEdit: record?.allowEdit != null ? String(record?.allowEdit) : null,
-            payload: record?.payload || record || null
+            allowEdit: record?.allowEdit != null ? String(record?.allowEdit) : null
           });
           result.records.push(persistedRecord);
         }
