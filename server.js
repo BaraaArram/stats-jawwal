@@ -318,19 +318,52 @@ function normalizeRegistrationSummaryRow(row, index) {
 }
 
 function extractAgentFromRow(row = {}) {
-  const username = String(row.regAgentDeviceName || row.agentDeviceName || row.agentName || row.regAgentName || row.agent || row.username || '').trim();
-  const teamId = String(row.regAgentName || row.agentRegion || row.agent || '').trim() || null;
+  const username = String(
+    row.regAgentDeviceName ||
+    row.agentDeviceName ||
+    row.agentName ||
+    row.regAgentName ||
+    row.agent ||
+    row.username ||
+    row.userId ||
+    row.customerIdNumber ||
+    row.mobileNumber ||
+    ''
+  ).trim();
+
+  const teamId = String(
+    row.teamId ||
+    row.team ||
+    row.agentRegion ||
+    row.regAgentName ||
+    row.agent ||
+    ''
+  ).trim() || null;
   return { username, teamId };
 }
 
 function getSummaryRows(summary) {
   if (!summary || typeof summary !== 'object') return [];
+
   if (Array.isArray(summary.data) && summary.data.length) return summary.data;
   if (Array.isArray(summary.data2) && summary.data2.length) return summary.data2;
-  if (summary.payload && typeof summary.payload === 'object') {
-    if (Array.isArray(summary.payload.data) && summary.payload.data.length) return summary.payload.data;
-    if (Array.isArray(summary.payload.data2) && summary.payload.data2.length) return summary.payload.data2;
+
+  if (summary.payload) {
+    let payload = summary.payload;
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload);
+      } catch (error) {
+        console.error('[Cache API] failed to parse summary.payload as JSON', error?.message || error);
+        payload = null;
+      }
+    }
+    if (payload && typeof payload === 'object') {
+      if (Array.isArray(payload.data) && payload.data.length) return payload.data;
+      if (Array.isArray(payload.data2) && payload.data2.length) return payload.data2;
+    }
   }
+
   return [];
 }
 
@@ -799,13 +832,22 @@ app.post('/api/registration-summary', async (req, res) => {
       const summaryRows = getSummaryRows(summary);
       console.error('[Cache API] registration-summary row count', { rows: Array.isArray(summaryRows) ? summaryRows.length : 0, payloadKeys: Object.keys(summary || {}) });
       if (Array.isArray(summaryRows) && summaryRows.length) {
+        let persistedRecords = 0;
+        let skippedRecords = 0;
         for (let rowIndex = 0; rowIndex < summaryRows.length; rowIndex += 1) {
           const rawRow = summaryRows[rowIndex];
           const normalizedRow = normalizeRegistrationSummaryRow(rawRow, rowIndex);
-          if (!normalizedRow) continue;
+          if (!normalizedRow) {
+            skippedRecords += 1;
+            continue;
+          }
 
           const { username, teamId } = extractAgentFromRow(normalizedRow);
-          if (!username) continue;
+          if (!username) {
+            skippedRecords += 1;
+            console.error('[Cache API] skipping record row due missing agent identity', { rowIndex, normalizedRow, rawRow });
+            continue;
+          }
 
           const status = String(normalizedRow.customerStatus || normalizedRow.status || 'unknown');
           const statusSummary = summarizeStatusCounts({ [status]: 1 });
@@ -842,6 +884,7 @@ app.post('/api/registration-summary', async (req, res) => {
               original: rawRow
             }
           });
+          persistedRecords += 1;
         }
       }
 
