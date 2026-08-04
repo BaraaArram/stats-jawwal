@@ -4,6 +4,7 @@
   "description": "Deployable backend cache service for Jawwal Pay UX+ user, team and record stats.",
   "main": "server.js",
   "scripts": {
+    "init-db": "node init-db.js",
     "start": "node server.js"
   },
   "engines": {
@@ -12,7 +13,6 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.18.4",
-    "lowdb": "^6.0.1",
     "pg": "^8.11.0"
   },
   "devDependencies": {

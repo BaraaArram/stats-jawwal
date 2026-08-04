@@ -2,11 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const crypto = require('crypto');
-const { createDatabase } = require('./db');
+const { createPgDatabase } = require('./pg_db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.json');
+const DATABASE_URL = process.env.DATABASE_URL || process.env.NEON_DATABASE_URL || process.env.NEON_URL;
 let isReady = false;
 
 const asyncHandler = (fn) => (req, res, next) => {
@@ -44,8 +44,6 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true }));
 
 app.use((req, res, next) => {
   if (req.path === '/health') {
@@ -57,10 +55,19 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true }));
+
 let db = null;
 
 async function initializeDatabase() {
-  db = await createDatabase(DB_PATH);
+  if (!DATABASE_URL) {
+    throw new Error('DATABASE_URL is required for PostgreSQL backend');
+  }
+  console.error('[Server] initializing PostgreSQL schema');
+  db = await createPgDatabase(DATABASE_URL);
+  app.locals.db = db;
+  console.error('[Server] PostgreSQL schema initialization complete');
 }
 
 function nowIso() {
@@ -1098,8 +1105,8 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal Server Error', details: err?.message || String(err) });
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[Server] unhandledRejection', { reason, promise });
+process.on('unhandledRejection', (reason) => {
+  console.error('[Server] unhandledRejection', reason);
 });
 
 process.on('uncaughtException', (error) => {

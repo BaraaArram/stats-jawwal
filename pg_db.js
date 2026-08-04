@@ -12,6 +12,14 @@ async function createPgDatabase(connectionString) {
     }
   });
 
+  pool.on('error', (error, client) => {
+    console.error('[PG DB] pool error', {
+      message: error?.message || String(error),
+      code: error?.code,
+      client: Boolean(client)
+    });
+  });
+
   async function executeQuery(query, params = []) {
     try {
       return await pool.query(query, params);
