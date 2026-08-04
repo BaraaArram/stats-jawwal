@@ -936,9 +936,9 @@ app.post('/api/registration-summary', async (req, res) => {
             const teamUpdate = Object.assign({}, team || {}, {
               name: team && team.name ? team.name : null,
               totalRecords: Number(stats.totalRecords || 0) || (team && team.totalRecords) || 0,
-              approvedCount: Number(stats.agents?.reduce((s,a)=>s + (Number(a.byStatus?.['تمت الموافقة']||a.byStatus?.['approved']||0),0),0) || 0) || (team && team.approvedCount) || 0,
-              pendingCount: Number(stats.agents?.reduce((s,a)=>s + (Number(a.byStatus?.['قيد المراجعة']||a.byStatus?.['pending']||0),0),0) || 0) || (team && team.pendingCount) || 0,
-              rejectedCount: Number(stats.agents?.reduce((s,a)=>s + (Number(a.byStatus?.['مرفوض']||a.byStatus?.['rejected']||0),0),0) || 0) || (team && team.rejectedCount) || 0,
+              approvedCount: Number(stats.agents?.reduce((s, a) => s + Number(a.byStatus?.['تمت الموافقة'] || a.byStatus?.['approved'] || 0), 0) || 0) || (team && team.approvedCount) || 0,
+              pendingCount: Number(stats.agents?.reduce((s, a) => s + Number(a.byStatus?.['قيد المراجعة'] || a.byStatus?.['pending'] || 0), 0) || 0) || (team && team.pendingCount) || 0,
+              rejectedCount: Number(stats.agents?.reduce((s, a) => s + Number(a.byStatus?.['مرفوض'] || a.byStatus?.['rejected'] || 0), 0) || 0) || (team && team.rejectedCount) || 0,
               memberCount: Array.isArray(stats.agents) ? stats.agents.length : (team && team.memberCount) || 0,
               lastSummaryAt: generatedAt
             });
