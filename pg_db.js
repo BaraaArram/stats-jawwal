@@ -3,8 +3,21 @@ const { Pool } = require('pg');
 async function createPgDatabase(connectionString) {
   const pool = new Pool({ connectionString });
 
+  console.error('[PG DB] connecting to postgres and initializing schema');
+  await pool.query('CREATE SCHEMA IF NOT EXISTS public');
+  await pool.query('SET search_path TO public');
   await cleanUpLegacyTables(pool);
   await ensureCurrentSchema(pool);
+
+  try {
+    await pool.query('SELECT 1 FROM users LIMIT 1');
+    await pool.query('SELECT 1 FROM teams LIMIT 1');
+  } catch (verifyError) {
+    console.error('[PG DB] schema verification failed', { message: verifyError.message, code: verifyError.code, detail: verifyError.detail });
+    throw verifyError;
+  }
+
+  console.error('[PG DB] postgres schema initialized successfully');
 
   return {
     type: 'pg',
@@ -136,7 +149,7 @@ async function cleanUpLegacyTables(pool) {
 }
 
 async function ensureCurrentSchema(pool) {
-  await pool.query(`CREATE TABLE IF NOT EXISTS teams (
+  await pool.query(`CREATE TABLE IF NOT EXISTS public.teams (
       teamId text PRIMARY KEY,
       name text,
       totalRecords integer DEFAULT 0,
@@ -152,7 +165,7 @@ async function ensureCurrentSchema(pool) {
     );
   `);
 
-  await pool.query(`CREATE TABLE IF NOT EXISTS users (
+  await pool.query(`CREATE TABLE IF NOT EXISTS public.users (
       userId text PRIMARY KEY,
       username text,
       teamId text,
@@ -165,11 +178,11 @@ async function ensureCurrentSchema(pool) {
       metadata jsonb,
       createdAt timestamptz DEFAULT now(),
       updatedAt timestamptz DEFAULT now(),
-      CONSTRAINT users_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE
+      CONSTRAINT users_team_fk FOREIGN KEY (teamId) REFERENCES public.teams(teamId) ON DELETE CASCADE
     );
   `);
 
-  await pool.query(`CREATE TABLE IF NOT EXISTS records (
+  await pool.query(`CREATE TABLE IF NOT EXISTS public.records (
       recordId text PRIMARY KEY,
       userId text,
       teamId text,
@@ -186,20 +199,20 @@ async function ensureCurrentSchema(pool) {
       payload jsonb,
       createdAt timestamptz DEFAULT now(),
       updatedAt timestamptz DEFAULT now(),
-      CONSTRAINT records_user_fk FOREIGN KEY (userId) REFERENCES users(userId) ON DELETE CASCADE,
-      CONSTRAINT records_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE
+      CONSTRAINT records_user_fk FOREIGN KEY (userId) REFERENCES public.users(userId) ON DELETE CASCADE,
+      CONSTRAINT records_team_fk FOREIGN KEY (teamId) REFERENCES public.teams(teamId) ON DELETE CASCADE
     );
   `);
 
-  await pool.query(`CREATE TABLE IF NOT EXISTS teamStats (
+  await pool.query(`CREATE TABLE IF NOT EXISTS public.teamStats (
       teamId text PRIMARY KEY,
       stats jsonb,
       lastUpdatedAt timestamptz DEFAULT now(),
-      CONSTRAINT teamstats_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE
+      CONSTRAINT teamstats_team_fk FOREIGN KEY (teamId) REFERENCES public.teams(teamId) ON DELETE CASCADE
     );
   `);
 
-  await pool.query(`CREATE TABLE IF NOT EXISTS registrationSummaries (
+  await pool.query(`CREATE TABLE IF NOT EXISTS public.registrationSummaries (
       summaryId text PRIMARY KEY,
       generatedAt timestamptz,
       totalRecords integer,
@@ -304,11 +317,11 @@ async function ensureForeignKeyConstraints(pool) {
 }
 
 function mapCollection(collection) {
-  if (collection === 'users') return 'users';
-  if (collection === 'teams') return 'teams';
-  if (collection === 'records') return 'records';
-  if (collection === 'teamStats') return 'teamStats';
-  if (collection === 'registrationSummaries') return 'registrationSummaries';
+  if (collection === 'users') return 'public.users';
+  if (collection === 'teams') return 'public.teams';
+  if (collection === 'records') return 'public.records';
+  if (collection === 'teamStats') return 'public.teamStats';
+  if (collection === 'registrationSummaries') return 'public.registrationSummaries';
   return collection;
 }
 
