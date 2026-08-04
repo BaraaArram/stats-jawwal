@@ -20,8 +20,26 @@ async function createPgDatabase(connectionString) {
     await cleanUpLegacyTables(client);
     await ensureCurrentSchema(client);
 
-    await client.query('SELECT 1 FROM users LIMIT 1');
-    await client.query('SELECT 1 FROM teams LIMIT 1');
+    const usersExists = await doesTableExist(client, 'users');
+    const teamsExists = await doesTableExist(client, 'teams');
+    if (!usersExists || !teamsExists) {
+      console.error('[PG DB] required tables missing after initial schema setup', { usersExists, teamsExists });
+      await ensureCurrentSchema(client);
+    }
+
+    try {
+      await client.query('SELECT 1 FROM users LIMIT 1');
+      await client.query('SELECT 1 FROM teams LIMIT 1');
+    } catch (testErr) {
+      if (testErr && testErr.code === '42P01') {
+        console.error('[PG DB] relation missing during verification, retrying schema setup', testErr.message || testErr);
+        await ensureCurrentSchema(client);
+        await client.query('SELECT 1 FROM users LIMIT 1');
+        await client.query('SELECT 1 FROM teams LIMIT 1');
+      } else {
+        throw testErr;
+      }
+    }
   } finally {
     client.release();
   }
@@ -332,6 +350,19 @@ function mapCollection(collection) {
   if (collection === 'teamStats') return 'teamStats';
   if (collection === 'registrationSummaries') return 'registrationSummaries';
   return collection;
+}
+
+async function doesTableExist(client, tableName) {
+  const res = await client.query(
+    `SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name = $1
+    );`,
+    [tableName]
+  );
+  return res.rows[0] && res.rows[0].exists === true;
 }
 
 function normalizeRow(collection, row) {
