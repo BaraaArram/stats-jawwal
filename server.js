@@ -7,6 +7,21 @@ const { createDatabase } = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.json');
+let isReady = false;
+
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+const wrapRouteMethod = (original) => (path, ...handlers) => {
+  return original(path, ...handlers.map((handler) => (typeof handler === 'function' ? asyncHandler(handler) : handler)));
+};
+
+app.get = wrapRouteMethod(app.get.bind(app));
+app.post = wrapRouteMethod(app.post.bind(app));
+app.put = wrapRouteMethod(app.put.bind(app));
+app.delete = wrapRouteMethod(app.delete.bind(app));
+app.options = wrapRouteMethod(app.options.bind(app));
 
 if (typeof console !== 'undefined') {
   console.log = () => {};
@@ -31,6 +46,16 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+app.use((req, res, next) => {
+  if (req.path === '/health') {
+    return next();
+  }
+  if (!isReady) {
+    return res.status(503).json({ error: 'Service unavailable', details: 'Server is still starting' });
+  }
+  next();
+});
 
 let db = null;
 
@@ -932,11 +957,16 @@ app.post('/api/registration-summary', async (req, res) => {
 
 app.get('/api/registration-summary', async (req, res) => {
   ensureDb();
-  if (typeof db.findItem === 'function') {
-    const single = await findItem('registrationSummaries', 'summaryId', 'latest');
-    return res.json({ summary: single || null });
+  try {
+    if (typeof db.findItem === 'function') {
+      const single = await findItem('registrationSummaries', 'summaryId', 'latest');
+      return res.json({ summary: single || null });
+    }
+    return res.status(500).json({ error: 'Registration summary not available' });
+  } catch (error) {
+    console.error('[Cache API] failed to fetch registration summary:', error);
+    return res.status(500).json({ error: 'Failed to load registration summary', details: error?.message || String(error) });
   }
-  return res.status(500).json({ error: 'Registration summary not available' });
 });
 
 app.get('/user-team/:userId', async (req, res) => {
@@ -1047,11 +1077,33 @@ app.post('/cache/refresh', async (req, res) => {
   }
 });
 
-initializeDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Jawwal Pay cache API listening on port ${PORT}`);
-  });
-}).catch((error) => {
-  console.error('Failed to initialize database:', error);
-  process.exit(1);
+async function startServer() {
+  try {
+    await initializeDatabase();
+    isReady = true;
+    app.listen(PORT, () => {
+      console.log(`Jawwal Pay cache API listening on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error('Failed to initialize database:', error);
+    process.exit(1);
+  }
+}
+
+app.use((err, req, res, next) => {
+  console.error('[Server] request error handler', err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({ error: 'Internal Server Error', details: err?.message || String(err) });
 });
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Server] unhandledRejection', { reason, promise });
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[Server] uncaughtException', error);
+});
+
+startServer();

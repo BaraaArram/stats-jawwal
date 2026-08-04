@@ -5,18 +5,44 @@ async function createPgDatabase(connectionString) {
 
   pool.on('connect', async (client) => {
     try {
-      await client.query('SET search_path TO public');
+      await executeDbQuery(client, 'SET search_path TO public');
     } catch (err) {
       console.error('[PG DB] failed to set search_path on new client', err?.message || err);
       throw err;
     }
   });
 
+  async function executeQuery(query, params = []) {
+    try {
+      return await pool.query(query, params);
+    } catch (error) {
+      console.error('[PG DB] query failed', {
+        query,
+        params,
+        message: error?.message || String(error)
+      });
+      throw error;
+    }
+  }
+
+  async function executeDbQuery(connection, query, params = []) {
+    try {
+      return await connection.query(query, params);
+    } catch (error) {
+      console.error('[PG DB] connection query failed', {
+        query,
+        params,
+        message: error?.message || String(error)
+      });
+      throw error;
+    }
+  }
+
   console.error('[PG DB] connecting to postgres and initializing schema');
   const client = await pool.connect();
   try {
-    await client.query('CREATE SCHEMA IF NOT EXISTS public');
-    await client.query('SET search_path TO public');
+    await executeDbQuery(client, 'CREATE SCHEMA IF NOT EXISTS public');
+    await executeDbQuery(client, 'SET search_path TO public');
     await cleanUpLegacyTables(client);
     await ensureCurrentSchema(client);
 
@@ -28,14 +54,14 @@ async function createPgDatabase(connectionString) {
     }
 
     try {
-      await client.query('SELECT 1 FROM users LIMIT 1');
-      await client.query('SELECT 1 FROM teams LIMIT 1');
+      await executeDbQuery(client, 'SELECT 1 FROM users LIMIT 1');
+      await executeDbQuery(client, 'SELECT 1 FROM teams LIMIT 1');
     } catch (testErr) {
       if (testErr && testErr.code === '42P01') {
         console.error('[PG DB] relation missing during verification, retrying schema setup', testErr.message || testErr);
         await ensureCurrentSchema(client);
-        await client.query('SELECT 1 FROM users LIMIT 1');
-        await client.query('SELECT 1 FROM teams LIMIT 1');
+        await executeDbQuery(client, 'SELECT 1 FROM users LIMIT 1');
+        await executeDbQuery(client, 'SELECT 1 FROM teams LIMIT 1');
       } else {
         throw testErr;
       }
@@ -52,7 +78,7 @@ async function createPgDatabase(connectionString) {
     async findItem(collection, key, value) {
       const table = mapCollection(collection);
       const q = `SELECT * FROM ${table} WHERE ${key} = $1 LIMIT 1`;
-      const res = await pool.query(q, [value]);
+      const res = await executeQuery(q, [value]);
       if (res.rows.length === 0) return null;
       return normalizeRow(collection, res.rows[0]);
     },
@@ -62,7 +88,7 @@ async function createPgDatabase(connectionString) {
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),now())
           ON CONFLICT (userId) DO UPDATE SET username = EXCLUDED.username, teamId = EXCLUDED.teamId, totalRecords = EXCLUDED.totalRecords, approvedCount = EXCLUDED.approvedCount, pendingCount = EXCLUDED.pendingCount, rejectedCount = EXCLUDED.rejectedCount, otherCount = EXCLUDED.otherCount, lastSeenSummaryAt = EXCLUDED.lastSeenSummaryAt, metadata = EXCLUDED.metadata, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [
+        const res = await executeQuery(q, [
           String(value),
           item.username || null,
           item.teamId || null,
@@ -82,7 +108,7 @@ async function createPgDatabase(connectionString) {
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),now())
           ON CONFLICT (teamId) DO UPDATE SET name = EXCLUDED.name, totalRecords = EXCLUDED.totalRecords, approvedCount = EXCLUDED.approvedCount, pendingCount = EXCLUDED.pendingCount, rejectedCount = EXCLUDED.rejectedCount, otherCount = EXCLUDED.otherCount, memberCount = EXCLUDED.memberCount, lastSummaryAt = EXCLUDED.lastSummaryAt, metadata = EXCLUDED.metadata, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [
+        const res = await executeQuery(q, [
           String(value),
           item.name || null,
           item.totalRecords || 0,
@@ -102,7 +128,7 @@ async function createPgDatabase(connectionString) {
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now())
           ON CONFLICT (recordId) DO UPDATE SET userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, fullName = EXCLUDED.fullName, customerIdNumber = EXCLUDED.customerIdNumber, mobileNumber = EXCLUDED.mobileNumber, creationDate = EXCLUDED.creationDate, submissionDate = EXCLUDED.submissionDate, approvalDate = EXCLUDED.approvalDate, regAgentName = EXCLUDED.regAgentName, customerStatus = EXCLUDED.customerStatus, regAgentDeviceName = EXCLUDED.regAgentDeviceName, allowEdit = EXCLUDED.allowEdit, payload = EXCLUDED.payload, updatedAt = now()
           RETURNING *`;
-        const res = await pool.query(q, [
+        const res = await executeQuery(q, [
           String(value),
           item.userId || null,
           item.teamId || null,
@@ -126,7 +152,7 @@ async function createPgDatabase(connectionString) {
           VALUES ($1,$2,$3)
           ON CONFLICT (teamId) DO UPDATE SET stats = EXCLUDED.stats, lastUpdatedAt = EXCLUDED.lastUpdatedAt
           RETURNING *`;
-        const res = await pool.query(q, [String(value), item.stats ? JSON.stringify(item.stats) : null, item.lastUpdatedAt || new Date().toISOString()]);
+        const res = await executeQuery(q, [String(value), item.stats ? JSON.stringify(item.stats) : null, item.lastUpdatedAt || new Date().toISOString()]);
         return normalizeRow('teamStats', res.rows[0]);
       }
 
@@ -135,7 +161,7 @@ async function createPgDatabase(connectionString) {
             VALUES ($1,$2,$3,$4,$5,now(),now())
             ON CONFLICT (summaryId) DO UPDATE SET generatedAt = EXCLUDED.generatedAt, totalRecords = EXCLUDED.totalRecords, agents = EXCLUDED.agents, payload = EXCLUDED.payload, updatedAt = now()
             RETURNING *`;
-          const res = await pool.query(q, [String(value), item.generatedAt || null, item.totalRecords || null, item.agents ? JSON.stringify(item.agents) : null, item.payload ? JSON.stringify(item.payload) : null]);
+          const res = await executeQuery(q, [String(value), item.generatedAt || null, item.totalRecords || null, item.agents ? JSON.stringify(item.agents) : null, item.payload ? JSON.stringify(item.payload) : null]);
           return normalizeRow('registrationSummaries', res.rows[0]);
       }
 
@@ -144,19 +170,19 @@ async function createPgDatabase(connectionString) {
     async filterItems(collection, key, value) {
       const table = mapCollection(collection);
       const q = `SELECT * FROM ${table} WHERE ${key} = $1`;
-      const res = await pool.query(q, [value]);
+      const res = await executeQuery(q, [value]);
       return res.rows.map(r => normalizeRow(collection, r));
     },
     async listCollection(collection) {
       const table = mapCollection(collection);
       const q = `SELECT * FROM ${table}`;
-      const res = await pool.query(q);
+      const res = await executeQuery(q);
       return res.rows.map(r => normalizeRow(collection, r));
     },
     async deleteItem(collection, key, value) {
       const table = mapCollection(collection);
       const q = `DELETE FROM ${table} WHERE ${key} = $1 RETURNING *`;
-      const res = await pool.query(q, [value]);
+      const res = await executeQuery(q, [value]);
       return res.rows[0] ? normalizeRow(collection, res.rows[0]) : null;
     },
     async write() { /* noop for pg */ },
@@ -168,7 +194,7 @@ async function cleanUpLegacyTables(pool) {
   const legacyTables = ['"user"', 'team', 'records', 'team_stats', 'registration_summary', 'user_stats', 'record', 'registrations'];
   for (const table of legacyTables) {
     try {
-      await pool.query(`DROP TABLE IF EXISTS ${table}`);
+      await executeDbQuery(pool, `DROP TABLE IF EXISTS ${table}`);
     } catch (error) {
       console.warn(`Failed to drop legacy table ${table}:`, error.message);
     }
@@ -176,7 +202,7 @@ async function cleanUpLegacyTables(pool) {
 }
 
 async function ensureCurrentSchema(pool) {
-  await pool.query(`CREATE TABLE IF NOT EXISTS teams (
+  await executeDbQuery(pool, `CREATE TABLE IF NOT EXISTS teams (
       teamId text PRIMARY KEY,
       name text,
       totalRecords integer DEFAULT 0,
@@ -192,7 +218,7 @@ async function ensureCurrentSchema(pool) {
     );
   `);
 
-  await pool.query(`CREATE TABLE IF NOT EXISTS users (
+  await executeDbQuery(pool, `CREATE TABLE IF NOT EXISTS users (
       userId text PRIMARY KEY,
       username text,
       teamId text,
@@ -209,7 +235,7 @@ async function ensureCurrentSchema(pool) {
     );
   `);
 
-  await pool.query(`CREATE TABLE IF NOT EXISTS records (
+  await executeDbQuery(pool, `CREATE TABLE IF NOT EXISTS records (
       recordId text PRIMARY KEY,
       userId text,
       teamId text,
@@ -231,7 +257,7 @@ async function ensureCurrentSchema(pool) {
     );
   `);
 
-  await pool.query(`CREATE TABLE IF NOT EXISTS teamStats (
+  await executeDbQuery(pool, `CREATE TABLE IF NOT EXISTS teamStats (
       teamId text PRIMARY KEY,
       stats jsonb,
       lastUpdatedAt timestamptz DEFAULT now(),
@@ -239,7 +265,7 @@ async function ensureCurrentSchema(pool) {
     );
   `);
 
-  await pool.query(`CREATE TABLE IF NOT EXISTS registrationSummaries (
+  await executeDbQuery(pool, `CREATE TABLE IF NOT EXISTS registrationSummaries (
       summaryId text PRIMARY KEY,
       generatedAt timestamptz,
       totalRecords integer,
@@ -254,42 +280,53 @@ async function ensureCurrentSchema(pool) {
 
   // Migration: ensure `summaryId` column and unique index exist for registrationSummaries
   try {
-    await pool.query(`ALTER TABLE registrationSummaries ADD COLUMN IF NOT EXISTS summaryId text;`);
+    await executeDbQuery(pool, `ALTER TABLE registrationSummaries ADD COLUMN IF NOT EXISTS summaryId text;`);
     // populate legacy rows with a stable id (use generatedAt text when present)
-    await pool.query(`UPDATE registrationSummaries SET summaryId = COALESCE(summaryId, to_char(generatedAt, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) WHERE summaryId IS NULL;`);
+    await executeDbQuery(pool, `UPDATE registrationSummaries SET summaryId = COALESCE(summaryId, to_char(generatedAt, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) WHERE summaryId IS NULL;`);
     // create a unique index to allow ON CONFLICT (summaryId)
-    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS registrationsummaries_summaryid_idx ON registrationSummaries (summaryId);`);
+    await executeDbQuery(pool, `CREATE UNIQUE INDEX IF NOT EXISTS registrationsummaries_summaryid_idx ON registrationSummaries (summaryId);`);
   } catch (mErr) {
     console.warn('Failed to migrate registrationSummaries schema:', mErr.message || mErr);
   }
 
   // Migration: ensure users and teams have explicit record counters and summary timestamps
   try {
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totalRecords integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS approvedCount integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS pendingCount integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS rejectedCount integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS otherCount integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS lastSeenSummaryAt timestamptz;`);
+    await executeDbQuery(pool, `ALTER TABLE registrationSummaries ADD COLUMN IF NOT EXISTS summaryId text;`);
+    // populate legacy rows with a stable id (use generatedAt text when present)
+    await executeDbQuery(pool, `UPDATE registrationSummaries SET summaryId = COALESCE(summaryId, to_char(generatedAt, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) WHERE summaryId IS NULL;`);
+    // create a unique index to allow ON CONFLICT (summaryId)
+    await executeDbQuery(pool, `CREATE UNIQUE INDEX IF NOT EXISTS registrationsummaries_summaryid_idx ON registrationSummaries (summaryId);`);
+  } catch (mErr) {
+    console.warn('Failed to migrate registrationSummaries schema:', mErr.message || mErr);
+  }
 
-    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS totalRecords integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS approvedCount integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS pendingCount integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS rejectedCount integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS otherCount integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS memberCount integer DEFAULT 0;`);
-    await pool.query(`ALTER TABLE teams ADD COLUMN IF NOT EXISTS lastSummaryAt timestamptz;`);
+  // Migration: ensure users and teams have explicit record counters and summary timestamps
+  try {
+    await executeDbQuery(pool, `ALTER TABLE users ADD COLUMN IF NOT EXISTS totalRecords integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE users ADD COLUMN IF NOT EXISTS approvedCount integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE users ADD COLUMN IF NOT EXISTS pendingCount integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE users ADD COLUMN IF NOT EXISTS rejectedCount integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE users ADD COLUMN IF NOT EXISTS otherCount integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE users ADD COLUMN IF NOT EXISTS lastSeenSummaryAt timestamptz;`);
 
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS fullName text;`);
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS customerIdNumber text;`);
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS mobileNumber text;`);
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS creationDate text;`);
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS submissionDate text;`);
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS approvalDate text;`);
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS regAgentName text;`);
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS customerStatus text;`);
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS regAgentDeviceName text;`);
-    await pool.query(`ALTER TABLE records ADD COLUMN IF NOT EXISTS allowEdit text;`);
+    await executeDbQuery(pool, `ALTER TABLE teams ADD COLUMN IF NOT EXISTS totalRecords integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE teams ADD COLUMN IF NOT EXISTS approvedCount integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE teams ADD COLUMN IF NOT EXISTS pendingCount integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE teams ADD COLUMN IF NOT EXISTS rejectedCount integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE teams ADD COLUMN IF NOT EXISTS otherCount integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE teams ADD COLUMN IF NOT EXISTS memberCount integer DEFAULT 0;`);
+    await executeDbQuery(pool, `ALTER TABLE teams ADD COLUMN IF NOT EXISTS lastSummaryAt timestamptz;`);
+
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS fullName text;`);
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS customerIdNumber text;`);
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS mobileNumber text;`);
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS creationDate text;`);
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS submissionDate text;`);
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS approvalDate text;`);
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS regAgentName text;`);
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS customerStatus text;`);
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS regAgentDeviceName text;`);
+    await executeDbQuery(pool, `ALTER TABLE records ADD COLUMN IF NOT EXISTS allowEdit text;`);
   } catch (mErr) {
     console.warn('Failed to migrate users/teams schema:', mErr.message || mErr);
   }
@@ -303,7 +340,7 @@ async function ensureCurrentSchema(pool) {
 
   for (const indexSql of indexStatements) {
     try {
-      await pool.query(indexSql);
+      await executeDbQuery(pool, indexSql);
     } catch (error) {
       console.warn(`Failed to create index: ${error.message}`);
     }
@@ -336,7 +373,7 @@ async function ensureForeignKeyConstraints(pool) {
 
   for (const sql of fkQueries) {
     try {
-      await pool.query(sql);
+      await executeDbQuery(pool, sql);
     } catch (error) {
       console.warn(`Failed to ensure foreign key constraint: ${error.message}`);
     }
@@ -353,7 +390,7 @@ function mapCollection(collection) {
 }
 
 async function doesTableExist(client, tableName) {
-  const res = await client.query(
+  const res = await executeDbQuery(client,
     `SELECT EXISTS (
       SELECT 1
       FROM information_schema.tables
