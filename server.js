@@ -998,7 +998,21 @@ app.post('/cache/refresh', async (req, res) => {
     return res.status(400).json({ error: 'Invalid JSON body for cache refresh' });
   }
 
-  const { user, users, team, stats, records } = req.body;
+  const { user, users, team, stats, records, isBatch, batchIndex, totalBatches } = req.body;
+  
+  console.log('[BACKEND] Cache refresh request received:', {
+    hasUser: !!user,
+    hasUsers: Array.isArray(users) && users.length > 0,
+    userCount: Array.isArray(users) ? users.length : 0,
+    hasTeam: !!team,
+    hasStats: !!stats,
+    hasRecords: Array.isArray(records) && records.length > 0,
+    recordCount: Array.isArray(records) ? records.length : 0,
+    isBatch: !!isBatch,
+    batchIndex: batchIndex || null,
+    totalBatches: totalBatches || null
+  });
+
   if (!user && !users && !team && !stats && !records) {
     return res.status(400).json({ error: 'Cache refresh payload must include user, users, team, stats, or records' });
   }
@@ -1007,32 +1021,39 @@ app.post('/cache/refresh', async (req, res) => {
 
   try {
     if (team && team.teamId) {
+      console.log('[BACKEND] Upserting team:', team.teamId, team.name);
       result.team = await upsertItem('teams', 'teamId', String(team.teamId), {
         name: team.name || null,
         metadata: team.metadata || null
       });
+      console.log('[BACKEND] Team upserted successfully:', result.team);
     }
 
     if (stats && stats.teamId) {
+      console.log('[BACKEND] Upserting team stats for:', stats.teamId);
       await ensureTeamExists(stats.teamId);
       result.teamStats = await upsertItem('teamStats', 'teamId', String(stats.teamId), {
         stats: stats.stats || null,
         lastUpdatedAt: stats.lastUpdatedAt || nowIso()
       });
+      console.log('[BACKEND] Team stats upserted successfully');
     }
 
     if (user && user.teamId) {
       await ensureTeamExists(user.teamId);
     }
     if (user && user.userId) {
+      console.log('[BACKEND] Upserting user:', user.userId, user.username);
       result.user = await upsertItem('users', 'userId', String(user.userId), {
         username: user.username || null,
         teamId: user.teamId || null,
         metadata: user.metadata || null
       });
+      console.log('[BACKEND] User upserted successfully:', result.user);
     }
 
     if (Array.isArray(users) && users.length > 0) {
+      console.log('[BACKEND] Upserting', users.length, 'users');
       result.users = [];
       for (const item of users) {
         if (!item || !item.userId) continue;
@@ -1046,39 +1067,72 @@ app.post('/cache/refresh', async (req, res) => {
         });
         result.users.push(persistedUser);
       }
+      console.log('[BACKEND] Users upserted successfully, count:', result.users.length);
     }
 
     if (Array.isArray(records) && records.length > 0) {
-        result.records = [];
-        for (const record of records) {
-          if (record?.teamId) {
-            await ensureTeamExists(record.teamId);
-          }
-          if (record?.userId) {
-            await ensureUserExists(record.userId, record.teamId || team?.teamId || user?.teamId);
-          }
-          const recordId = record?.recordId || `${team?.teamId || user?.userId || 'record'}-${result.records.length + 1}`;
-          const persistedRecord = await upsertItem('records', 'recordId', String(recordId), {
-            userId: record?.userId || null,
-            teamId: record?.teamId || null,
-            fullName: record?.fullName || record?.name || null,
-            customerIdNumber: record?.customerIdNumber || record?.customer_id || record?.customerId || null,
-            mobileNumber: record?.mobileNumber || record?.phone || record?.mobile || null,
-            creationDate: record?.creationDate || record?.startDate || null,
-            submissionDate: record?.submissionDate || record?.submittedAt || null,
-            approvalDate: record?.approvalDate || record?.approvedAt || null,
-            regAgentName: record?.regAgentName || record?.agentRegion || record?.agentName || record?.agent || null,
-            customerStatus: record?.customerStatus || record?.status || null,
-            regAgentDeviceName: record?.regAgentDeviceName || record?.agentDeviceName || record?.agentName || null,
-            allowEdit: record?.allowEdit != null ? String(record?.allowEdit) : null
-          });
-          result.records.push(persistedRecord);
+      console.log('[BACKEND] Upserting', records.length, 'records');
+      console.log('[BACKEND] Sample record (first):', JSON.stringify(records[0], null, 2));
+      
+      result.records = [];
+      for (const record of records) {
+        if (record?.teamId) {
+          await ensureTeamExists(record.teamId);
         }
+        if (record?.userId) {
+          await ensureUserExists(record.userId, record.teamId || team?.teamId || user?.teamId);
+        }
+        const recordId = record?.recordId || `${team?.teamId || user?.userId || 'record'}-${result.records.length + 1}`;
+        
+        console.log('[BACKEND] Upserting record:', recordId, {
+          fullName: record?.fullName,
+          customerIdNumber: record?.customerIdNumber,
+          mobileNumber: record?.mobileNumber,
+          customerStatus: record?.customerStatus
+        });
+        
+        const persistedRecord = await upsertItem('records', 'recordId', String(recordId), {
+          userId: record?.userId || null,
+          teamId: record?.teamId || null,
+          fullName: record?.fullName || record?.name || null,
+          customerIdNumber: record?.customerIdNumber || record?.customer_id || record?.customerId || null,
+          mobileNumber: record?.mobileNumber || record?.phone || record?.mobile || null,
+          creationDate: record?.creationDate || record?.startDate || null,
+          submissionDate: record?.submissionDate || record?.submittedAt || null,
+          approvalDate: record?.approvalDate || record?.approvedAt || null,
+          regAgentName: record?.regAgentName || record?.agentRegion || record?.agentName || record?.agent || null,
+          customerStatus: record?.customerStatus || record?.status || null,
+          regAgentDeviceName: record?.regAgentDeviceName || record?.agentDeviceName || record?.agentName || null,
+          allowEdit: record?.allowEdit != null ? String(record?.allowEdit) : null
+        });
+        
+        console.log('[BACKEND] Record upserted successfully:', {
+          recordId: persistedRecord.recordId,
+          fullName: persistedRecord.fullName,
+          customerIdNumber: persistedRecord.customerIdNumber,
+          mobileNumber: persistedRecord.mobileNumber
+        });
+        
+        result.records.push(persistedRecord);
       }
+      console.log('[BACKEND] All records upserted successfully, count:', result.records.length);
+    }
+    
     await db.write();
+    console.log('[BACKEND] Cache refresh completed successfully:', {
+      teamCount: result.team ? 1 : 0,
+      userCount: result.user ? 1 : 0,
+      usersCount: result.users ? result.users.length : 0,
+      recordCount: result.records ? result.records.length : 0
+    });
+    
     return res.json(result);
   } catch (error) {
-    console.error('Cache refresh failed:', error);
+    console.error('[BACKEND] Cache refresh failed:', error);
+    console.error('[BACKEND] Error details:', {
+      message: error.message,
+      stack: error.stack
+    });
     return res.status(500).json({ error: 'Cache refresh failed', details: error.message });
   }
 });

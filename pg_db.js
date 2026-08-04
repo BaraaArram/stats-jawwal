@@ -132,6 +132,14 @@ async function createPgDatabase(connectionString) {
       }
 
       if (collection === 'records') {
+        console.log('[PG DB] Upserting record:', {
+          recordId: String(value),
+          fullName: item.fullName,
+          customerIdNumber: item.customerIdNumber,
+          mobileNumber: item.mobileNumber,
+          customerStatus: item.customerStatus
+        });
+        
         const q = `INSERT INTO records (recordId, userId, teamId, fullName, customerIdNumber, mobileNumber, creationDate, submissionDate, approvalDate, regAgentName, customerStatus, regAgentDeviceName, allowEdit, createdAt, updatedAt)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),now())
           ON CONFLICT (recordId) DO UPDATE SET userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, fullName = EXCLUDED.fullName, customerIdNumber = EXCLUDED.customerIdNumber, mobileNumber = EXCLUDED.mobileNumber, creationDate = EXCLUDED.creationDate, submissionDate = EXCLUDED.submissionDate, approvalDate = EXCLUDED.approvalDate, regAgentName = EXCLUDED.regAgentName, customerStatus = EXCLUDED.customerStatus, regAgentDeviceName = EXCLUDED.regAgentDeviceName, allowEdit = EXCLUDED.allowEdit, updatedAt = now()
@@ -151,7 +159,17 @@ async function createPgDatabase(connectionString) {
           item.regAgentDeviceName || null,
           item.allowEdit != null ? String(item.allowEdit) : null
         ]);
-        return normalizeRow('records', res.rows[0]);
+        
+        const normalized = normalizeRow('records', res.rows[0]);
+        console.log('[PG DB] Record upserted in DB:', {
+          recordId: normalized.recordId,
+          fullName: normalized.fullName,
+          customerIdNumber: normalized.customerIdNumber,
+          mobileNumber: normalized.mobileNumber,
+          customerStatus: normalized.customerStatus
+        });
+        
+        return normalized;
       }
 
       if (collection === 'teamStats') {
