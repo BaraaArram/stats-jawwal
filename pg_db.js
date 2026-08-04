@@ -1,5 +1,18 @@
 const { Pool } = require('pg');
 
+async function executeDbQuery(connection, query, params = []) {
+  try {
+    return await connection.query(query, params);
+  } catch (error) {
+    console.error('[PG DB] connection query failed', {
+      query,
+      params,
+      message: error?.message || String(error)
+    });
+    throw error;
+  }
+}
+
 async function createPgDatabase(connectionString) {
   const pool = new Pool({ connectionString });
 
@@ -25,19 +38,6 @@ async function createPgDatabase(connectionString) {
       return await pool.query(query, params);
     } catch (error) {
       console.error('[PG DB] query failed', {
-        query,
-        params,
-        message: error?.message || String(error)
-      });
-      throw error;
-    }
-  }
-
-  async function executeDbQuery(connection, query, params = []) {
-    try {
-      return await connection.query(query, params);
-    } catch (error) {
-      console.error('[PG DB] connection query failed', {
         query,
         params,
         message: error?.message || String(error)
