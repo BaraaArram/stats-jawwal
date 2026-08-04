@@ -136,8 +136,7 @@ async function cleanUpLegacyTables(pool) {
 }
 
 async function ensureCurrentSchema(pool) {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS teams (
+  await pool.query(`CREATE TABLE IF NOT EXISTS teams (
       teamId text PRIMARY KEY,
       name text,
       totalRecords integer DEFAULT 0,
@@ -151,8 +150,9 @@ async function ensureCurrentSchema(pool) {
       createdAt timestamptz DEFAULT now(),
       updatedAt timestamptz DEFAULT now()
     );
+  `);
 
-    CREATE TABLE IF NOT EXISTS users (
+  await pool.query(`CREATE TABLE IF NOT EXISTS users (
       userId text PRIMARY KEY,
       username text,
       teamId text,
@@ -167,8 +167,9 @@ async function ensureCurrentSchema(pool) {
       updatedAt timestamptz DEFAULT now(),
       CONSTRAINT users_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE
     );
+  `);
 
-    CREATE TABLE IF NOT EXISTS records (
+  await pool.query(`CREATE TABLE IF NOT EXISTS records (
       recordId text PRIMARY KEY,
       userId text,
       teamId text,
@@ -188,15 +189,17 @@ async function ensureCurrentSchema(pool) {
       CONSTRAINT records_user_fk FOREIGN KEY (userId) REFERENCES users(userId) ON DELETE CASCADE,
       CONSTRAINT records_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE
     );
+  `);
 
-    CREATE TABLE IF NOT EXISTS teamStats (
+  await pool.query(`CREATE TABLE IF NOT EXISTS teamStats (
       teamId text PRIMARY KEY,
       stats jsonb,
       lastUpdatedAt timestamptz DEFAULT now(),
       CONSTRAINT teamstats_team_fk FOREIGN KEY (teamId) REFERENCES teams(teamId) ON DELETE CASCADE
     );
+  `);
 
-    CREATE TABLE IF NOT EXISTS registrationSummaries (
+  await pool.query(`CREATE TABLE IF NOT EXISTS registrationSummaries (
       summaryId text PRIMARY KEY,
       generatedAt timestamptz,
       totalRecords integer,
