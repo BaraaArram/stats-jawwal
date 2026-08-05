@@ -1063,6 +1063,12 @@ app.post('/cache/refresh', async (req, res) => {
         const persistedUser = await upsertItem('users', 'userId', String(item.userId), {
           username: item.username || null,
           teamId: item.teamId || null,
+          totalRecords: item.totalRecords || 0,
+          approvedCount: item.approvedCount || 0,
+          pendingCount: item.pendingCount || 0,
+          rejectedCount: item.rejectedCount || 0,
+          otherCount: item.otherCount || 0,
+          lastSeenSummaryAt: item.lastSeenSummaryAt || null,
           metadata: item.metadata || null
         });
         result.users.push(persistedUser);
