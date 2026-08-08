@@ -1386,6 +1386,38 @@ app.post('/cache/refresh', async (req, res) => {
   const result = {};
 
   try {
+    // PERF FIX: the old code called ensureTeamExists()/ensureUserExists()
+    // (each a SELECT, and sometimes an INSERT) once per user AND once per
+    // record, sequentially, plus a throwaway findItem('records', ...) per
+    // record that only existed to preserve createdAt -- a value the
+    // upsert's ON CONFLICT already preserves on its own. For a 1000-record
+    // batch that was 3000-4000+ sequential round trips to Postgres. We now
+    // collect every teamId/userId referenced anywhere in the payload up
+    // front and ensure they exist with two bulk statements (one for teams,
+    // one for users), then upsert users/records themselves with one
+    // multi-row statement each instead of one row at a time.
+    const allTeamIds = [];
+    const allUsers = [];
+    if (team?.teamId) allTeamIds.push(team.teamId);
+    if (stats?.teamId) allTeamIds.push(stats.teamId);
+    if (user?.teamId) allTeamIds.push(user.teamId);
+    if (user?.userId) allUsers.push({ userId: user.userId, teamId: user.teamId });
+    if (Array.isArray(users)) {
+      for (const item of users) {
+        if (!item?.userId) continue;
+        if (item.teamId) allTeamIds.push(item.teamId);
+        allUsers.push({ userId: item.userId, teamId: item.teamId });
+      }
+    }
+    if (Array.isArray(records)) {
+      for (const record of records) {
+        if (record?.teamId) allTeamIds.push(record.teamId);
+        if (record?.userId) allUsers.push({ userId: record.userId, teamId: record.teamId || team?.teamId || user?.teamId });
+      }
+    }
+    await db.ensureTeamsExist(allTeamIds);
+    await db.ensureUsersExist(allUsers);
+
     if (team && team.teamId) {
       result.team = await upsertItem('teams', 'teamId', String(team.teamId), {
         name: team.name || null,
@@ -1426,13 +1458,14 @@ app.post('/cache/refresh', async (req, res) => {
     }
 
     if (Array.isArray(users) && users.length > 0) {
-      result.users = [];
+      // dedupe by userId, keeping the last occurrence -- a single multi-row
+      // ON CONFLICT statement errors if the same key appears twice, whereas
+      // the old sequential loop just let later rows overwrite earlier ones.
+      const userMap = new Map();
       for (const item of users) {
         if (!item || !item.userId) continue;
-        if (item.teamId) {
-          await ensureTeamExists(item.teamId);
-        }
-        const persistedUser = await upsertItem('users', 'userId', String(item.userId), {
+        userMap.set(String(item.userId), {
+          userId: String(item.userId),
           username: item.username || null,
           teamId: item.teamId || null,
           totalRecords: item.totalRecords || 0,
@@ -1443,24 +1476,17 @@ app.post('/cache/refresh', async (req, res) => {
           lastSeenSummaryAt: item.lastSeenSummaryAt || null,
           metadata: item.metadata || null
         });
-        result.users.push(persistedUser);
       }
+      result.users = await db.upsertUsersBulk([...userMap.values()]);
     }
 
     if (Array.isArray(records) && records.length > 0) {
-      result.records = [];
-      for (const record of records) {
-        if (record?.teamId) {
-          await ensureTeamExists(record.teamId);
-        }
-        if (record?.userId) {
-          await ensureUserExists(record.userId, record.teamId || team?.teamId || user?.teamId);
-        }
-        const recordId = record?.recordId || `${team?.teamId || user?.userId || 'record'}-${result.records.length + 1}`;
-        const existingRecord = await findItem('records', 'recordId', String(recordId));
-        const timestamp = nowIso();
-
-        const persistedRecord = await upsertItem('records', 'recordId', String(recordId), {
+      // same dedupe-by-key reasoning as users above.
+      const recordMap = new Map();
+      records.forEach((record, idx) => {
+        const recordId = String(record?.recordId || `${team?.teamId || user?.userId || 'record'}-${idx + 1}`);
+        recordMap.set(recordId, {
+          recordId,
           userId: record?.userId || null,
           teamId: record?.teamId || null,
           fullName: record?.fullName || record?.name || null,
@@ -1472,13 +1498,10 @@ app.post('/cache/refresh', async (req, res) => {
           regAgentName: record?.regAgentName || record?.agentRegion || record?.agentName || record?.agent || null,
           customerStatus: record?.customerStatus || record?.status || null,
           regAgentDeviceName: record?.regAgentDeviceName || record?.agentDeviceName || record?.agentName || null,
-          allowEdit: record?.allowEdit != null ? String(record?.allowEdit) : 'false',
-          createdAt: existingRecord?.createdAt || timestamp,
-          updatedAt: timestamp
+          allowEdit: record?.allowEdit != null ? String(record?.allowEdit) : 'false'
         });
-
-        result.records.push(persistedRecord);
-      }
+      });
+      result.records = await db.upsertRecordsBulk([...recordMap.values()]);
     }
 
     await persist();

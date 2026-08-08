@@ -207,6 +207,101 @@ async function createPgDatabase(connectionString) {
 
       return null;
     },
+    // PERF FIX: bulk-ensure teams exist with a single round trip instead of
+    // one SELECT (+ maybe INSERT) per team. Used to satisfy the
+    // records/users -> teams foreign key before a batch upsert. Only fills
+    // in a bare placeholder row if missing; a later explicit upsertItem
+    // call for a real team payload still fully updates it.
+    async ensureTeamsExist(teamIds) {
+      const ids = [...new Set((teamIds || []).filter(Boolean).map(String))];
+      if (ids.length === 0) return;
+      const q = `INSERT INTO teams (teamId, createdAt, updatedAt)
+        SELECT id, now(), now() FROM unnest($1::text[]) AS id
+        ON CONFLICT (teamId) DO NOTHING`;
+      await executeQuery(q, [ids]);
+    },
+    // PERF FIX: bulk-ensure users exist (see ensureTeamsExist above). Callers
+    // must have already ensured referenced teams exist, since userId->teamId
+    // is a foreign key.
+    async ensureUsersExist(users) {
+      const map = new Map();
+      for (const u of users || []) {
+        if (!u || !u.userId) continue;
+        const id = String(u.userId);
+        if (!map.has(id)) map.set(id, u.teamId ? String(u.teamId) : null);
+      }
+      if (map.size === 0) return;
+      const userIds = [...map.keys()];
+      const teamIds = userIds.map((id) => map.get(id));
+      const q = `INSERT INTO users (userId, teamId, createdAt, updatedAt)
+        SELECT * FROM unnest($1::text[], $2::text[]) AS t(userId, teamId)
+        ON CONFLICT (userId) DO NOTHING`;
+      await executeQuery(q, [userIds, teamIds]);
+    },
+    // PERF FIX: upsert every record in a batch with a single multi-row
+    // INSERT ... ON CONFLICT statement instead of one round trip per record.
+    // createdAt is intentionally left out of the UPDATE SET clause so an
+    // existing row's createdAt is preserved automatically (same effect as
+    // the old COALESCE(records.createdAt, EXCLUDED.createdAt), without
+    // needing a separate SELECT first).
+    async upsertRecordsBulk(records) {
+      if (!Array.isArray(records) || records.length === 0) return [];
+      const colList = ['recordId', 'userId', 'teamId', 'fullName', 'customerIdNumber', 'mobileNumber',
+        'creationDate', 'submissionDate', 'approvalDate', 'regAgentName', 'customerStatus',
+        'regAgentDeviceName', 'allowEdit'];
+      const values = [];
+      const placeholders = records.map((r, i) => {
+        const base = i * colList.length;
+        values.push(
+          String(r.recordId), r.userId || null, r.teamId || null, r.fullName || null,
+          r.customerIdNumber || null, r.mobileNumber || null, r.creationDate || null,
+          r.submissionDate || null, r.approvalDate || null, r.regAgentName || null,
+          r.customerStatus || null, r.regAgentDeviceName || null,
+          r.allowEdit != null ? String(r.allowEdit) : null
+        );
+        return `(${colList.map((_, j) => `$${base + j + 1}`).join(',')}, now(), now())`;
+      });
+      const q = `INSERT INTO records (${colList.join(',')}, createdAt, updatedAt)
+        VALUES ${placeholders.join(',')}
+        ON CONFLICT (recordId) DO UPDATE SET
+          userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, fullName = EXCLUDED.fullName,
+          customerIdNumber = EXCLUDED.customerIdNumber, mobileNumber = EXCLUDED.mobileNumber,
+          creationDate = EXCLUDED.creationDate, submissionDate = EXCLUDED.submissionDate,
+          approvalDate = EXCLUDED.approvalDate, regAgentName = EXCLUDED.regAgentName,
+          customerStatus = EXCLUDED.customerStatus, regAgentDeviceName = EXCLUDED.regAgentDeviceName,
+          allowEdit = EXCLUDED.allowEdit, updatedAt = now()
+        RETURNING *`;
+      const res = await executeQuery(q, values);
+      return res.rows.map((row) => normalizeRow('records', row));
+    },
+    // PERF FIX: same idea as upsertRecordsBulk, for the `users` array in a
+    // cache/refresh payload.
+    async upsertUsersBulk(users) {
+      if (!Array.isArray(users) || users.length === 0) return [];
+      const colList = ['userId', 'username', 'teamId', 'totalRecords', 'approvedCount', 'pendingCount',
+        'rejectedCount', 'otherCount', 'lastSeenSummaryAt', 'metadata'];
+      const values = [];
+      const placeholders = users.map((u, i) => {
+        const base = i * colList.length;
+        values.push(
+          String(u.userId), u.username || null, u.teamId || null,
+          u.totalRecords || 0, u.approvedCount || 0, u.pendingCount || 0,
+          u.rejectedCount || 0, u.otherCount || 0, u.lastSeenSummaryAt || null,
+          u.metadata ? JSON.stringify(u.metadata) : null
+        );
+        return `(${colList.map((_, j) => `$${base + j + 1}`).join(',')}, now(), now())`;
+      });
+      const q = `INSERT INTO users (${colList.join(',')}, createdAt, updatedAt)
+        VALUES ${placeholders.join(',')}
+        ON CONFLICT (userId) DO UPDATE SET
+          username = EXCLUDED.username, teamId = EXCLUDED.teamId, totalRecords = EXCLUDED.totalRecords,
+          approvedCount = EXCLUDED.approvedCount, pendingCount = EXCLUDED.pendingCount,
+          rejectedCount = EXCLUDED.rejectedCount, otherCount = EXCLUDED.otherCount,
+          lastSeenSummaryAt = EXCLUDED.lastSeenSummaryAt, metadata = EXCLUDED.metadata, updatedAt = now()
+        RETURNING *`;
+      const res = await executeQuery(q, values);
+      return res.rows.map((row) => normalizeRow('users', row));
+    },
     async filterItems(collection, key, value) {
       if (!isValidColumnName(key)) {
         throw new Error(`Invalid column name: ${key}`);
