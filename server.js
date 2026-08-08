@@ -992,6 +992,42 @@ app.get('/users/:userId/records', async (req, res) => {
   res.json({ userId: req.params.userId, records });
 });
 
+// GET /records?dateRange=all|24h|48h|week&dateColumn=creationDate|submissionDate
+app.get('/records', async (req, res) => {
+  ensureDb();
+  const { dateRange, dateColumn = 'creationDate' } = req.query;
+  
+  let records;
+  if (dateRange && dateRange !== 'all') {
+    const now = new Date();
+    let startDate;
+    
+    switch (dateRange) {
+      case '24h':
+        startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        break;
+      case '48h':
+        startDate = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+        break;
+      case 'week':
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      default:
+        startDate = null;
+    }
+    
+    if (startDate && typeof db.filterItemsByDateRange === 'function') {
+      records = await db.filterItemsByDateRange('records', dateColumn, startDate.toISOString(), now.toISOString());
+    } else {
+      records = await listCollection('records');
+    }
+  } else {
+    records = await listCollection('records');
+  }
+  
+  res.json({ dateRange, dateColumn, count: records.length, records });
+});
+
 // --- Sync watermark -------------------------------------------------
 // Tells a client "where did we stop uploading" for a given user, computed
 // live from the records actually stored server-side -- not from any

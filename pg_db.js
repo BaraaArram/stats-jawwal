@@ -319,6 +319,28 @@ async function createPgDatabase(connectionString) {
       const res = await executeQuery(q, params);
       return res.rows.map(r => normalizeRow(collection, r));
     },
+    async filterItemsByDateRange(collection, dateColumn, startDate, endDate) {
+      if (!isValidColumnName(dateColumn)) {
+        throw new Error(`Invalid column name: ${dateColumn}`);
+      }
+      const table = mapCollection(collection);
+      let q = `SELECT * FROM ${table}`;
+      let params = [];
+      
+      if (startDate && endDate) {
+        q += ` WHERE ${dateColumn} >= $1 AND ${dateColumn} <= $2`;
+        params = [startDate, endDate];
+      } else if (startDate) {
+        q += ` WHERE ${dateColumn} >= $1`;
+        params = [startDate];
+      } else if (endDate) {
+        q += ` WHERE ${dateColumn} <= $1`;
+        params = [endDate];
+      }
+      
+      const res = await executeQuery(q, params);
+      return res.rows.map(r => normalizeRow(collection, r));
+    },
     async listCollection(collection) {
       const table = mapCollection(collection);
       const q = `SELECT * FROM ${table}`;
