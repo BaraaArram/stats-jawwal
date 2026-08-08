@@ -79,18 +79,81 @@
       .field.full { grid-column: 1 / -1; }
       .field input, .field textarea { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); color: var(--text); }
       .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+      
+      /* Login Screen */
+      .login-screen {
+        display: flex; align-items: center; justify-content: center; min-height: 100vh;
+        background: linear-gradient(135deg, var(--bg), #0d1830 60%, #13243d);
+      }
+      .login-card {
+        width: min(400px, 100%); padding: 32px; border-radius: 24px; background: var(--panel);
+        border: 1px solid var(--border); box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+      }
+      .login-card h1 { margin: 0 0 8px; font-size: 1.5rem; text-align: center; }
+      .login-card p { margin: 0 0 24px; color: var(--muted); text-align: center; }
+      .login-form { display: flex; flex-direction: column; gap: 16px; }
+      .login-error {
+        padding: 12px; border-radius: 10px; background: rgba(255,107,107,0.15); border: 1px solid var(--danger);
+        color: var(--danger); font-size: 0.9rem; display: none;
+      }
+      .login-error.show { display: block; }
+      .login-field { display: flex; flex-direction: column; gap: 6px; }
+      .login-field label { font-size: 0.9rem; color: var(--muted); }
+      .login-field input {
+        border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+        background: var(--panel-2); color: var(--text); font-size: 1rem;
+      }
+      .login-field input:focus { outline: none; border-color: var(--accent); }
+      .login-btn {
+        border: none; border-radius: 10px; padding: 12px 16px; cursor: pointer;
+        font-weight: 700; color: white; background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        transition: 0.2s ease;
+      }
+      .login-btn:hover { opacity: 0.9; }
+      .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      
+      /* Admin Panel */
+      .admin-panel { display: none; }
+      .admin-panel.visible { display: block; }
+      .header-actions { display: flex; align-items: center; gap: 12px; }
+      .logout-btn {
+        border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px;
+        background: transparent; color: var(--text); cursor: pointer; font-size: 0.9rem;
+      }
+      .logout-btn:hover { background: rgba(255,255,255,0.1); }
+      
       @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
       @media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>
-    <div class="shell">
+    <!-- Login Screen -->
+    <div class="login-screen" id="loginScreen">
+      <div class="login-card">
+        <h1>Admin Login</h1>
+        <p>Enter your admin API key to access the console</p>
+        <div class="login-error" id="loginError">Invalid API key. Please try again.</div>
+        <form class="login-form" id="loginForm">
+          <div class="login-field">
+            <label for="apiKey">Admin API Key</label>
+            <input type="password" id="apiKey" placeholder="Enter your admin API key" required autocomplete="current-password">
+          </div>
+          <button type="submit" class="login-btn" id="loginBtn">Login</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Admin Panel -->
+    <div class="shell admin-panel" id="adminPanel">
       <div class="hero">
         <div>
           <h1>Jawwal Pay Admin Console</h1>
           <p>Browse, search, and manage the cached user, team, record, and stats data from the API backend.</p>
         </div>
-        <div class="pill" id="status-pill">Loading collections…</div>
+        <div class="header-actions">
+          <div class="pill" id="status-pill">Loading collections…</div>
+          <button class="logout-btn" id="logoutBtn">Logout</button>
+        </div>
       </div>
 
       <div class="grid">
@@ -132,7 +195,104 @@
     </div>
 
     <script>
-      const state = { collections: {}, activeCollection: 'users', currentItems: [], editingId: null };
+      // Login Management
+      const loginScreen = document.getElementById('loginScreen');
+      const adminPanel = document.getElementById('adminPanel');
+      const loginForm = document.getElementById('loginForm');
+      const loginError = document.getElementById('loginError');
+      const logoutBtn = document.getElementById('logoutBtn');
+      
+      // Check if user is already logged in
+      const savedApiKey = localStorage.getItem('adminApiKey');
+      if (savedApiKey) {
+        showAdminPanel(savedApiKey);
+      }
+      
+      loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const apiKey = document.getElementById('apiKey').value.trim();
+        if (!apiKey) {
+          showLoginError('Please enter an API key');
+          return;
+        }
+        
+        loginBtn.disabled = true;
+        loginBtn.textContent = 'Verifying...';
+        
+        try {
+          // Test the API key by making a request to the admin endpoint
+          const response = await fetch('/admin/api/collections', {
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json'
+            }
+          });
+          
+          if (response.ok) {
+            // API key is valid
+            localStorage.setItem('adminApiKey', apiKey);
+            showAdminPanel(apiKey);
+          } else {
+            showLoginError('Invalid API key. Please try again.');
+          }
+        } catch (error) {
+          showLoginError('Connection error. Please try again.');
+        } finally {
+          loginBtn.disabled = false;
+          loginBtn.textContent = 'Login';
+        }
+      });
+      
+      logoutBtn.addEventListener('click', () => {
+        localStorage.removeItem('adminApiKey');
+        showLoginScreen();
+      });
+      
+      function showLoginError(message) {
+        loginError.textContent = message;
+        loginError.classList.add('show');
+      }
+      
+      function showLoginScreen() {
+        loginScreen.style.display = 'flex';
+        adminPanel.classList.remove('visible');
+        document.getElementById('apiKey').value = '';
+        loginError.classList.remove('show');
+      }
+      
+      function showAdminPanel(apiKey) {
+        loginScreen.style.display = 'none';
+        adminPanel.classList.add('visible');
+        // Store API key for subsequent requests
+        window.adminApiKey = apiKey;
+        loadCollections();
+      }
+      
+      async function makeAdminRequest(endpoint, options = {}) {
+        const apiKey = window.adminApiKey || localStorage.getItem('adminApiKey');
+        if (!apiKey) {
+          showLoginScreen();
+          throw new Error('Not authenticated');
+        }
+        
+        const response = await fetch(endpoint, {
+          ...options,
+          headers: {
+            ...options.headers,
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (response.status === 401) {
+          localStorage.removeItem('adminApiKey');
+          showLoginScreen();
+          throw new Error('Authentication failed');
+        }
+        
+        return response;
+      }
+
       const collectionMeta = {
         users: { key: 'userId', label: 'Users', fields: [
           { name: 'userId', label: 'User ID', required: true },
@@ -245,7 +405,7 @@
       }
 
       async function loadCollections() {
-        const response = await fetch('/admin/api/collections');
+        const response = await makeAdminRequest('/admin/api/collections');
         const data = await response.json();
         state.collections = data.collections || {};
         document.getElementById('status-pill').textContent = 'Collections loaded';
@@ -303,7 +463,7 @@
         const id = button.dataset.id;
         if (action === 'delete') {
           if (!confirm('Delete this item?')) return;
-          await fetch(`/admin/api/${state.activeCollection}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          await makeAdminRequest(`/admin/api/${state.activeCollection}/${encodeURIComponent(id)}`, { method: 'DELETE' });
           await loadCollections();
         }
         if (action === 'edit') {
@@ -334,12 +494,15 @@
         body[meta.key] = keyValue;
         const method = state.editingId ? 'PUT' : 'POST';
         const endpoint = state.editingId ? `/admin/api/${state.activeCollection}/${encodeURIComponent(state.editingId)}` : `/admin/api/${state.activeCollection}`;
-        await fetch(endpoint, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        await makeAdminRequest(endpoint, { method, body: JSON.stringify(body) });
         document.getElementById('modal').classList.remove('open');
         await loadCollections();
       });
 
-      loadCollections();
+      // Only load collections if user is authenticated
+      if (window.adminApiKey || localStorage.getItem('adminApiKey')) {
+        loadCollections();
+      }
     </script>
   </body>
 </html>
