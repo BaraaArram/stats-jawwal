@@ -362,7 +362,9 @@ async function createPgDatabase(connectionString) {
 }
 
 async function cleanUpLegacyTables(client) {
-  const legacyTables = ['"user"', 'team', 'records', 'team_stats', 'registration_summary', 'user_stats', 'record', 'registrations'];
+  // Only drop tables that are truly legacy and not part of the current schema
+  // Current schema uses: users, teams, records, teamStats, registrationSummaries
+  const legacyTables = ['"user"', 'team', 'user_stats', 'record', 'registrations'];
   for (const table of legacyTables) {
     try {
       await executeDbQuery(client, `DROP TABLE IF EXISTS ${table}`);
