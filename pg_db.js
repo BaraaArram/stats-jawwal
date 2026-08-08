@@ -84,6 +84,9 @@ async function createPgDatabase(connectionString) {
     type: 'pg',
     pool,
     async findItem(collection, key, value) {
+      if (!isValidColumnName(key)) {
+        throw new Error(`Invalid column name: ${key}`);
+      }
       const table = mapCollection(collection);
       const q = `SELECT * FROM ${table} WHERE ${key} = $1 LIMIT 1`;
       const res = await executeQuery(q, [value]);
@@ -193,6 +196,9 @@ async function createPgDatabase(connectionString) {
       return null;
     },
     async filterItems(collection, key, value) {
+      if (!isValidColumnName(key)) {
+        throw new Error(`Invalid column name: ${key}`);
+      }
       const table = mapCollection(collection);
       const q = `SELECT * FROM ${table} WHERE ${key} = $1`;
       const res = await executeQuery(q, [value]);
@@ -205,6 +211,9 @@ async function createPgDatabase(connectionString) {
       return res.rows.map(r => normalizeRow(collection, r));
     },
     async deleteItem(collection, key, value) {
+      if (!isValidColumnName(key)) {
+        throw new Error(`Invalid column name: ${key}`);
+      }
       const table = mapCollection(collection);
       const q = `DELETE FROM ${table} WHERE ${key} = $1 RETURNING *`;
       const res = await executeQuery(q, [value]);
@@ -215,11 +224,11 @@ async function createPgDatabase(connectionString) {
   };
 }
 
-async function cleanUpLegacyTables(pool) {
+async function cleanUpLegacyTables(client) {
   const legacyTables = ['"user"', 'team', 'records', 'team_stats', 'registration_summary', 'user_stats', 'record', 'registrations'];
   for (const table of legacyTables) {
     try {
-      await executeDbQuery(pool, `DROP TABLE IF EXISTS ${table}`);
+      await executeDbQuery(client, `DROP TABLE IF EXISTS ${table}`);
     } catch (error) {
       console.warn(`Failed to drop legacy table ${table}:`, error.message);
     }
@@ -303,17 +312,6 @@ async function ensureCurrentSchema(pool) {
   await ensureForeignKeyConstraints(pool);
 
   // Migration: ensure `summaryId` column and unique index exist for registrationSummaries
-  try {
-    await executeDbQuery(pool, `ALTER TABLE registrationSummaries ADD COLUMN IF NOT EXISTS summaryId text;`);
-    // populate legacy rows with a stable id (use generatedAt text when present)
-    await executeDbQuery(pool, `UPDATE registrationSummaries SET summaryId = COALESCE(summaryId, to_char(generatedAt, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) WHERE summaryId IS NULL;`);
-    // create a unique index to allow ON CONFLICT (summaryId)
-    await executeDbQuery(pool, `CREATE UNIQUE INDEX IF NOT EXISTS registrationsummaries_summaryid_idx ON registrationSummaries (summaryId);`);
-  } catch (mErr) {
-    console.warn('Failed to migrate registrationSummaries schema:', mErr.message || mErr);
-  }
-
-  // Migration: ensure users and teams have explicit record counters and summary timestamps
   try {
     await executeDbQuery(pool, `ALTER TABLE registrationSummaries ADD COLUMN IF NOT EXISTS summaryId text;`);
     // populate legacy rows with a stable id (use generatedAt text when present)
@@ -412,6 +410,17 @@ function mapCollection(collection) {
   if (collection === 'teamStats') return 'teamStats';
   if (collection === 'registrationSummaries') return 'registrationSummaries';
   return collection;
+}
+
+function isValidColumnName(key) {
+  const validKeys = [
+    'userId', 'teamId', 'recordId', 'summaryId',
+    'username', 'name', 'fullName', 'customerIdNumber', 'mobileNumber', 'customerStatus',
+    'totalRecords', 'approvedCount', 'pendingCount', 'rejectedCount', 'otherCount',
+    'memberCount', 'lastSummaryAt', 'lastSeenSummaryAt', 'lastUpdatedAt',
+    'regAgentName', 'regAgentDeviceName', 'allowEdit', 'creationDate', 'submissionDate', 'approvalDate'
+  ];
+  return validKeys.includes(key);
 }
 
 async function doesTableExist(client, tableName) {

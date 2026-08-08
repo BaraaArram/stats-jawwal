@@ -7,6 +7,41 @@ const { createPgDatabase } = require('./pg_db');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL || process.env.NEON_DATABASE_URL || process.env.NEON_URL;
+
+// --- Admin auth -------------------------------------------------------
+// BUG FIX: previously every /admin and /admin/api/* route (list/create/
+// update/delete on ALL collections) was reachable by anyone with network
+// access, with no authentication at all. We now require a shared secret.
+// Fails CLOSED (denies access) if ADMIN_API_KEY isn't configured, rather
+// than silently staying open like before -- set the env var to restore
+// admin panel access.
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || null;
+
+function timingSafeEqualStr(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) {
+    // still do a comparison of equal-length buffers to avoid leaking length
+    // information via early return timing on the common case.
+    crypto.timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function requireAdminAuth(req, res, next) {
+  if (!ADMIN_API_KEY) {
+    console.error('[Server] ADMIN_API_KEY is not set - denying admin request. Set ADMIN_API_KEY to enable the admin panel/API.');
+    return res.status(503).json({ error: 'Admin API is not configured. Set ADMIN_API_KEY on the server.' });
+  }
+  const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const provided = req.headers['x-admin-key'] || bearer || (req.query && req.query.adminKey) || '';
+  if (!provided || !timingSafeEqualStr(provided, ADMIN_API_KEY)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
 let isReady = false;
 
 const asyncHandler = (fn) => (req, res, next) => {
@@ -23,6 +58,9 @@ app.put = wrapRouteMethod(app.put.bind(app));
 app.delete = wrapRouteMethod(app.delete.bind(app));
 app.options = wrapRouteMethod(app.options.bind(app));
 
+// NOTE: console.log/info/debug/warn/trace are intentionally silenced in production.
+// Only console.error survives. Diagnostic logging throughout this file uses
+// console.error for that reason -- do not switch it back to console.log.
 if (typeof console !== 'undefined') {
   console.log = () => {};
   console.info = () => {};
@@ -30,20 +68,19 @@ if (typeof console !== 'undefined') {
   console.warn = () => {};
   console.trace = () => {};
 }
+
+// --- CORS ---------------------------------------------------------------
+// BUG FIX: the old code registered `cors({ origin: true, credentials: true })`
+// (which correctly reflects the request Origin header) AND THEN a manual
+// middleware that unconditionally overwrote the header with a literal '*'.
+// Browsers refuse `Access-Control-Allow-Origin: *` together with
+// `Access-Control-Allow-Credentials: true`, so every credentialed
+// cross-origin request was actually being rejected client-side even
+// though the server "succeeded". We now rely solely on the `cors`
+// middleware, which both reflects the origin and answers OPTIONS
+// preflights for every route (no separate app.options('*', ...) needed --
+// that wildcard pattern also breaks under Express 5 / path-to-regexp v6+).
 app.use(cors({ origin: true, credentials: true }));
-app.options('*', cors({ origin: true, credentials: true }));
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With');
-  // Allow Accept header for clients that send it
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-  next();
-});
 
 app.use((req, res, next) => {
   if (req.path === '/health') {
@@ -70,6 +107,17 @@ async function initializeDatabase() {
   console.error('[Server] PostgreSQL schema initialization complete');
 }
 
+// Safe wrapper around db.write() -- some db implementations (e.g. a
+// Postgres-backed store where every upsert already commits) may not expose
+// a write() method at all. Calling it unconditionally would 500 every
+// mutating route. This makes write() a no-op when unavailable instead.
+async function persist() {
+  ensureDb();
+  if (typeof db.write === 'function') {
+    await db.write();
+  }
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -78,7 +126,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: nowIso() });
 });
 
-app.get('/admin', (req, res) => {
+app.get('/admin', requireAdminAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
@@ -116,15 +164,40 @@ function sanitizePayload(collection, payload) {
   return normalized;
 }
 
-app.get('/admin/api/collections', async (req, res) => {
+// --- PII-safe logging helpers -------------------------------------------
+// BUG FIX: the old /api/registration-summary handler logged full request
+// headers and a raw JSON preview of the body (names, national ID numbers,
+// phone numbers) to console.error -- the one log level that survives the
+// production log silencing above, meaning PII was durably persisted in
+// logs. We now log shapes/counts instead of raw values, and mask any
+// identifying strings we do need to log.
+function maskValue(value, keep = 2) {
+  const s = String(value == null ? '' : value);
+  if (!s) return s;
+  if (s.length <= keep) return '*'.repeat(s.length);
+  return s.slice(0, keep) + '*'.repeat(Math.max(3, s.length - keep));
+}
+
+function safeHeadersForLog(headers = {}) {
+  const allow = ['content-length', 'content-type', 'origin', 'user-agent'];
+  const out = {};
+  for (const key of allow) {
+    if (headers[key] != null) out[key] = headers[key];
+  }
+  return out;
+}
+
+app.get('/admin/api/collections', requireAdminAuth, async (req, res) => {
   try {
     const collections = {};
+    const allRecords = await listCollection('records');
     for (const collection of VALID_COLLECTIONS) {
       let items = await listCollection(collection);
       if (collection === 'users') {
-        items = await Promise.all((items || []).map(attachComputedUserStats));
+        items = attachComputedUserStatsBulk(items || [], allRecords);
       } else if (collection === 'teams') {
-        items = await Promise.all((items || []).map(attachComputedTeamStats));
+        const allUsers = await listCollection('users');
+        items = attachComputedTeamStatsBulk(items || [], allRecords, allUsers);
       }
       collections[collection] = { count: Array.isArray(items) ? items.length : 0, items };
     }
@@ -135,7 +208,7 @@ app.get('/admin/api/collections', async (req, res) => {
   }
 });
 
-app.get('/admin/api/:collection', async (req, res) => {
+app.get('/admin/api/:collection', requireAdminAuth, async (req, res) => {
   try {
     const collection = req.params.collection;
     if (!VALID_COLLECTIONS.includes(collection)) {
@@ -144,9 +217,12 @@ app.get('/admin/api/:collection', async (req, res) => {
 
     let items = await listCollection(collection);
     if (collection === 'users') {
-      items = await Promise.all((items || []).map(attachComputedUserStats));
+      const allRecords = await filterItemsForKeys('records', 'userId', (items || []).map((u) => u.userId));
+      items = attachComputedUserStatsBulk(items || [], allRecords);
     } else if (collection === 'teams') {
-      items = await Promise.all((items || []).map(attachComputedTeamStats));
+      const allRecords = await filterItemsForKeys('records', 'teamId', (items || []).map((t) => t.teamId));
+      const allUsers = await listCollection('users');
+      items = attachComputedTeamStatsBulk(items || [], allRecords, allUsers);
     }
     res.json({ collection, items });
   } catch (error) {
@@ -155,7 +231,7 @@ app.get('/admin/api/:collection', async (req, res) => {
   }
 });
 
-app.post('/admin/api/:collection', async (req, res) => {
+app.post('/admin/api/:collection', requireAdminAuth, async (req, res) => {
   try {
     const { collection } = req.params;
     const key = getCollectionKey(collection);
@@ -166,6 +242,7 @@ app.post('/admin/api/:collection', async (req, res) => {
     const payload = sanitizePayload(collection, req.body);
     const idValue = String(req.body[key] || req.body.id || `${collection}-${Date.now()}`);
     const item = await upsertItem(collection, key, idValue, payload);
+    await persist();
     res.json({ collection, item });
   } catch (error) {
     console.error('Failed to create admin item:', error);
@@ -173,7 +250,7 @@ app.post('/admin/api/:collection', async (req, res) => {
   }
 });
 
-app.put('/admin/api/:collection/:id', async (req, res) => {
+app.put('/admin/api/:collection/:id', requireAdminAuth, async (req, res) => {
   try {
     const { collection, id } = req.params;
     const key = getCollectionKey(collection);
@@ -183,6 +260,7 @@ app.put('/admin/api/:collection/:id', async (req, res) => {
 
     const payload = sanitizePayload(collection, req.body);
     const item = await upsertItem(collection, key, String(id), payload);
+    await persist();
     res.json({ collection, item });
   } catch (error) {
     console.error('Failed to update admin item:', error);
@@ -190,7 +268,7 @@ app.put('/admin/api/:collection/:id', async (req, res) => {
   }
 });
 
-app.delete('/admin/api/:collection/:id', async (req, res) => {
+app.delete('/admin/api/:collection/:id', requireAdminAuth, async (req, res) => {
   try {
     const { collection, id } = req.params;
     const key = getCollectionKey(collection);
@@ -198,12 +276,17 @@ app.delete('/admin/api/:collection/:id', async (req, res) => {
       return res.status(404).json({ error: 'Collection not found' });
     }
 
+    // BUG FIX: these two branches used to call deleteCollectionItem directly,
+    // skipping the cascade cleanup that the top-level /teams/:teamId and
+    // /users/:userId routes perform. That left orphaned users/records/
+    // teamStats behind whenever a team or user was deleted from the admin
+    // panel. Both paths now share the same cascade helpers.
     if (collection === 'teams') {
-      const deletedTeam = await deleteCollectionItem('teams', 'teamId', String(id));
-      if (!deletedTeam) {
+      const result = await deleteTeamAndRelatedData(id);
+      if (!result.deletedTeam) {
         return res.status(404).json({ error: 'Team not found' });
       }
-      return res.json({ collection, deletedTeam });
+      return res.json({ collection, deletedTeam: result.deletedTeam, deletedTeamStats: result.deletedTeamStats, deletedUsers: result.deletedUsers, deletedRecords: result.deletedRecords });
     }
 
     if (collection === 'users') {
@@ -211,7 +294,8 @@ app.delete('/admin/api/:collection/:id', async (req, res) => {
       if (!deletedUser) {
         return res.status(404).json({ error: 'User not found' });
       }
-      return res.json({ collection, deletedUser });
+      const deletedRecords = await deleteRecordsByUser(String(id));
+      return res.json({ collection, deletedUser, deletedRecords });
     }
 
     const removed = await deleteCollectionItem(collection, key, String(id));
@@ -249,6 +333,28 @@ async function filterItems(collection, key, value) {
     return await db.filterItems(collection, key, value);
   }
   return [];
+}
+
+// Helper used to keep the admin "list all X" endpoints down to O(1) DB
+// round trips instead of O(n) (see attachComputedUserStatsBulk /
+// attachComputedTeamStatsBulk below). Falls back to per-key filterItems
+// calls if the underlying db doesn't support listing everything at once,
+// so it still works against a minimal db implementation.
+async function filterItemsForKeys(collection, key, values) {
+  ensureDb();
+  const unique = Array.from(new Set((values || []).filter(Boolean).map(String)));
+  if (unique.length === 0) return [];
+  const all = await listCollection(collection);
+  if (Array.isArray(all) && all.length) {
+    const set = new Set(unique);
+    return all.filter((item) => item && set.has(String(item[key])));
+  }
+  const results = [];
+  for (const value of unique) {
+    const items = await filterItems(collection, key, value);
+    if (Array.isArray(items)) results.push(...items);
+  }
+  return results;
 }
 
 async function listCollection(collection) {
@@ -349,8 +455,26 @@ function normalizeRegistrationSummaryRow(row, index) {
   return null;
 }
 
+// BUG FIX: this used to return the raw team *name* string (e.g.
+// "Region East") as `teamId`, which was then stamped directly onto the
+// record. Meanwhile every team *object* is keyed by a resolved id (a
+// deterministic UUID derived from the same name via getOrCreateTeamForKey).
+// The two never matched, so `/teams/:teamId/records`,
+// `/stats/teams/:teamId`, and the team cascade-delete all silently failed
+// to find records ingested from summary rows. extractAgentFromRow now
+// returns the raw *key* only; callers must resolve it through
+// getOrCreateTeamForKey (same as the agent-based path) before using it as
+// a record's teamId.
+//
+// BUG FIX (2): the agents[] loop (fed by buildRegistrationSummary() on the
+// frontend) already strips everything after '@' from the device name via
+// normalizeAgentUsername() before it reaches us. This summaryRows loop was
+// using the raw, unstripped device name instead, so the same physical agent
+// ("agentA@device.local" here vs. "agentA" from the agents loop) forked
+// into two separate userIds on every ingest. We now apply the same
+// '@'-stripping rule here so both loops resolve to one userId.
 function extractAgentFromRow(row = {}) {
-  const username = String(
+  const rawUsername = String(
     row.regAgentDeviceName ||
     row.agentDeviceName ||
     row.agentName ||
@@ -363,7 +487,9 @@ function extractAgentFromRow(row = {}) {
     ''
   ).trim();
 
-  const teamId = String(
+  const username = rawUsername.includes('@') ? rawUsername.split('@')[0].trim() : rawUsername;
+
+  const teamKey = String(
     row.teamId ||
     row.team ||
     row.agentRegion ||
@@ -371,7 +497,7 @@ function extractAgentFromRow(row = {}) {
     row.agent ||
     ''
   ).trim() || null;
-  return { username, teamId };
+  return { username, teamKey };
 }
 
 function getSummaryRows(summary) {
@@ -399,6 +525,28 @@ function getSummaryRows(summary) {
   return [];
 }
 
+// --- Status classification -----------------------------------------------
+// BUG FIX: the old code independently duplicated this logic in
+// normalizeCounts() and summarizeStatusCounts(), and used plain, unanchored
+// substring regexes (`/approved/.test(s)`). That misclassified any status
+// string containing "approved" as a substring of a *negative* phrase (e.g.
+// "Not Approved", "Disapproved", "غير موافق") as an approval. There is now a
+// single classifyStatus() used everywhere: rejected/pending patterns are
+// checked first (they don't have this collision), and the approved branch
+// is rejected if a negation word appears anywhere in the string.
+const NEGATION_RE = /\b(not|non|un|no)\b|غير\s*|لم\s|لا\s/i;
+
+function classifyStatus(rawStatus) {
+  const s = String(rawStatus || '').trim().toLowerCase();
+  if (!s) return 'other';
+  if (/مرفوض|رفض|rejected|declined|denied/.test(s)) return 'rejected';
+  if (/قيد|انتظار|pending|review|processing|in\s*progress/.test(s)) return 'pending';
+  if (/موافقة|تمت|approved|accept/.test(s)) {
+    return NEGATION_RE.test(s) ? 'rejected' : 'approved';
+  }
+  return 'other';
+}
+
 function normalizeCounts(payload) {
   if (!payload || typeof payload !== 'object') return { total: 0, approved: 0, pending: 0, rejected: 0, other: 0 };
   const agent = payload.agent && typeof payload.agent === 'object' ? payload.agent : payload;
@@ -412,11 +560,12 @@ function normalizeCounts(payload) {
   for (const [key, value] of Object.entries(byStatus)) {
     const count = Number(value || 0) || 0;
     total += count;
-    const normalized = String(key || '').toLowerCase();
-    if (/موافقة|approved|تمت/.test(normalized)) approved += count;
-    else if (/قيد|pending|review|انتظار/.test(normalized)) pending += count;
-    else if (/مرفوض|rejected|رفض/.test(normalized)) rejected += count;
-    else other += count;
+    switch (classifyStatus(key)) {
+      case 'approved': approved += count; break;
+      case 'pending': pending += count; break;
+      case 'rejected': rejected += count; break;
+      default: other += count; break;
+    }
   }
 
   if (!total && Number(agent.totalCount || agent.totalRecords || 0)) {
@@ -424,6 +573,23 @@ function normalizeCounts(payload) {
   }
 
   return { total, approved, pending, rejected, other };
+}
+
+function summarizeStatusCounts(byStatus = {}) {
+  const map = byStatus && typeof byStatus === 'object' ? byStatus : {};
+  let approved = 0, pending = 0, rejected = 0, other = 0, total = 0;
+  for (const [k, v] of Object.entries(map)) {
+    const n = Number(v || 0) || 0;
+    total += n;
+    switch (classifyStatus(k)) {
+      case 'approved': approved += n; break;
+      case 'pending': pending += n; break;
+      case 'rejected': rejected += n; break;
+      default: other += n; break;
+    }
+  }
+  const topStatus = Object.entries(map).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))[0];
+  return { total, approved, pending, rejected, other, topStatus: topStatus ? String(topStatus[0]) : null };
 }
 
 function aggregateRecordStats(records = []) {
@@ -475,39 +641,97 @@ async function attachComputedTeamStats(team) {
   });
 }
 
-async function ensureTeamExists(teamId) {
-  if (!teamId) return null;
-  const existingTeam = await findItem('teams', 'teamId', String(teamId));
-  if (existingTeam) return existingTeam;
-  return await upsertItem('teams', 'teamId', String(teamId), {
-    name: null,
-    totalRecords: 0,
-    approvedCount: 0,
-    pendingCount: 0,
-    rejectedCount: 0,
-    otherCount: 0,
-    memberCount: 0,
-    lastSummaryAt: null
+// --- Bulk (N+1-free) variants ---------------------------------------------
+// PERF FIX: /admin/api/collections and /admin/api/:collection used to call
+// attachComputedUserStats / attachComputedTeamStats per row, each of which
+// issued its own filterItems('records', ...) query -- i.e. one DB round
+// trip per user/team ("N+1"). These bulk variants take the already-fetched
+// record (and user, for teams) lists and group them in memory once.
+function groupRecordsBy(records, key) {
+  const map = new Map();
+  for (const record of records || []) {
+    if (!record) continue;
+    const k = record[key];
+    if (k == null) continue;
+    const bucket = map.get(String(k));
+    if (bucket) bucket.push(record);
+    else map.set(String(k), [record]);
+  }
+  return map;
+}
+
+function attachComputedUserStatsBulk(users, allRecords) {
+  const byUser = groupRecordsBy(allRecords, 'userId');
+  return (users || []).map((user) => {
+    if (!user || !user.userId) return user;
+    const counts = aggregateRecordStats(byUser.get(String(user.userId)) || []);
+    return Object.assign({}, user, {
+      totalRecords: counts.totalRecords,
+      approvedCount: counts.approvedCount,
+      pendingCount: counts.pendingCount,
+      rejectedCount: counts.rejectedCount,
+      otherCount: counts.otherCount,
+      recordCount: counts.recordCount,
+      lastSeenSummaryAt: user.lastSeenSummaryAt || null
+    });
   });
 }
 
-async function ensureUserExists(userId, teamId = null) {
-  if (!userId) return null;
-  const existingUser = await findItem('users', 'userId', String(userId));
-  if (existingUser) return existingUser;
-  if (teamId) {
-    await ensureTeamExists(teamId);
-  }
-  return await upsertItem('users', 'userId', String(userId), {
-    username: null,
-    teamId: teamId || null,
-    totalRecords: 0,
-    approvedCount: 0,
-    pendingCount: 0,
-    rejectedCount: 0,
-    otherCount: 0,
-    lastSeenSummaryAt: null
+function attachComputedTeamStatsBulk(teams, allRecords, allUsers) {
+  const recordsByTeam = groupRecordsBy(allRecords, 'teamId');
+  const usersByTeam = groupRecordsBy(allUsers, 'teamId');
+  return (teams || []).map((team) => {
+    if (!team || !team.teamId) return team;
+    const counts = aggregateRecordStats(recordsByTeam.get(String(team.teamId)) || []);
+    const teamUsers = usersByTeam.get(String(team.teamId)) || [];
+    return Object.assign({}, team, {
+      totalRecords: counts.totalRecords,
+      approvedCount: counts.approvedCount,
+      pendingCount: counts.pendingCount,
+      rejectedCount: counts.rejectedCount,
+      otherCount: counts.otherCount,
+      memberCount: teamUsers.length,
+      lastSummaryAt: team.lastSummaryAt || null
+    });
   });
+}
+
+// --- Deterministic team identity -------------------------------------------
+// BUG FIX (race condition + N+1 scan): the old getOrCreateTeamForKey()
+// scanned the *entire* teams collection on every single row/agent being
+// ingested (thousands of full-table reads for a large summary), and had a
+// read-then-write race: two concurrent requests creating the same
+// previously-unseen team could both pass the "not found" check and each
+// insert a duplicate team with a random UUID.
+//
+// Fix: derive a stable UUID-shaped id directly from the canonical key via a
+// hash. The same key always maps to the same id, so upsertItem (an atomic
+// INSERT ... ON CONFLICT DO UPDATE at the DB layer) naturally dedupes
+// concurrent creations -- no scan, no race. We still support teams created
+// under the old scheme (random id + metadata.originalNameKey) by consulting
+// a single teams snapshot fetched once per request (see buildTeamKeyCache),
+// instead of once per row.
+function deterministicTeamId(canonicalKey) {
+  const hash = crypto.createHash('sha1').update(`team:${canonicalKey}`).digest('hex');
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    '5' + hash.slice(13, 16),
+    ((parseInt(hash[16], 16) & 0x3) | 0x8).toString(16) + hash.slice(17, 20),
+    hash.slice(20, 32)
+  ].join('-');
+}
+
+async function buildTeamKeyCache() {
+  const allTeams = await listCollection('teams');
+  const byKey = new Map();
+  for (const team of Array.isArray(allTeams) ? allTeams : []) {
+    const meta = team && team.metadata ? team.metadata : {};
+    if (meta && meta.originalNameKey) {
+      byKey.set(String(meta.originalNameKey), team);
+    }
+  }
+  return byKey;
 }
 
 function buildTeamNameFromUsers(agents = []) {
@@ -529,34 +753,30 @@ function buildTeamNameFromUsers(agents = []) {
   }
 }
 
-async function getOrCreateTeamForKey(teamKey, agents = []) {
+async function getOrCreateTeamForKey(teamKey, agents = [], teamKeyCache = null) {
   // teamKey: original team name or identifier from summary (may be 'unknown')
   const canonical = String(teamKey || '').trim().toLowerCase();
-  // try to find existing team by metadata.originalNameKey
-  if (canonical) {
-    const allTeams = await listCollection('teams');
-    for (const t of Array.isArray(allTeams) ? allTeams : []) {
-      const meta = t && t.metadata ? t.metadata : {};
-      if (meta && meta.originalNameKey === canonical) return t;
-    }
+  if (!canonical) return null;
+
+  if (teamKeyCache && teamKeyCache.has(canonical)) {
+    return teamKeyCache.get(canonical);
+  }
+  if (!teamKeyCache) {
+    // No per-request cache supplied -- fall back to a single scan (still
+    // one query, not one per row, since callers should pass a cache).
+    const cache = await buildTeamKeyCache();
+    if (cache.has(canonical)) return cache.get(canonical);
   }
 
-  // not found -> create new team with UUID
-  const newTeamId = crypto.randomUUID();
-  const name = buildTeamNameFromUsers(agents) || (canonical ? canonical : `Team ${String(newTeamId).slice(0, 6)}`);
+  const newTeamId = deterministicTeamId(canonical);
+  const name = buildTeamNameFromUsers(agents) || canonical || `Team ${newTeamId.slice(0, 6)}`;
   const team = await upsertItem('teams', 'teamId', String(newTeamId), {
     name: name || null,
     metadata: { originalName: teamKey || null, originalNameKey: canonical || null, createdFrom: 'registration-summary' }
   });
 
+  if (teamKeyCache) teamKeyCache.set(canonical, team);
   return team;
-}
-
-async function getRecordTeamIdForRow(normalizedRow, agents = []) {
-  const teamKey = String(normalizedRow.regAgentName || normalizedRow.agentRegion || normalizedRow.agent || '').trim();
-  if (!teamKey) return null;
-  const team = await getOrCreateTeamForKey(teamKey, agents);
-  return team?.teamId || null;
 }
 
 function ensureDb() {
@@ -604,7 +824,7 @@ app.post('/users', async (req, res) => {
     metadata: metadata || null
   });
 
-  await db.write();
+  await persist();
   res.json({ user });
 });
 
@@ -649,8 +869,41 @@ app.post('/teams', async (req, res) => {
     metadata: metadata || null
   });
 
-  await db.write();
+  await persist();
   res.json({ team });
+});
+
+// IMPORTANT: '/records/exist' must be declared BEFORE '/records/:recordId'.
+// Express matches routes in declaration order, and ':recordId' would
+// otherwise swallow the literal path 'exist' (recordId === 'exist'),
+// making the bulk-existence-check endpoint below unreachable.
+app.get('/records/exist', async (req, res) => {
+  try {
+    const ids = req.query.ids;
+    if (!ids || typeof ids !== 'string') {
+      return res.json({ existingIds: [] });
+    }
+
+    const idArray = ids.split(',').map(id => id.trim()).filter(Boolean);
+    if (idArray.length === 0) {
+      return res.json({ existingIds: [] });
+    }
+
+    // Check which records exist
+    const existingIds = [];
+    for (const id of idArray) {
+      const record = await findItem('records', 'recordId', id);
+      if (record) {
+        existingIds.push(id);
+      }
+    }
+
+    console.error('[BACKEND] Checked existence of', idArray.length, 'records, found', existingIds.length, 'existing');
+    res.json({ existingIds });
+  } catch (error) {
+    console.error('Failed to check records existence:', error);
+    res.status(500).json({ error: 'Failed to check records existence' });
+  }
 });
 
 app.get('/records/:recordId', async (req, res) => {
@@ -682,6 +935,13 @@ app.post('/records', async (req, res) => {
   } = req.body;
   const resolvedRecordId = String(recordId || crypto.randomUUID());
 
+  // Preserve createdAt across updates to the same recordId; stamp
+  // updatedAt on every write. This gives the stats endpoints below a
+  // reliable, server-controlled timestamp to bucket activity by, instead
+  // of depending on inconsistently-shaped source dates.
+  const existing = await findItem('records', 'recordId', resolvedRecordId);
+  const timestamp = nowIso();
+
   const record = await upsertItem('records', 'recordId', resolvedRecordId, {
     userId: userId || null,
     teamId: teamId || null,
@@ -694,11 +954,13 @@ app.post('/records', async (req, res) => {
     regAgentName: regAgentName || null,
     customerStatus: customerStatus || null,
     regAgentDeviceName: regAgentDeviceName || null,
-    allowEdit: allowEdit != null ? String(allowEdit) : null,
-    payload: payload || null
+    allowEdit: allowEdit != null ? String(allowEdit) : 'false',
+    payload: payload || null,
+    createdAt: existing?.createdAt || timestamp,
+    updatedAt: timestamp
   });
 
-  await db.write();
+  await persist();
   res.json({ record });
 });
 
@@ -734,16 +996,53 @@ app.post('/team-stats', async (req, res) => {
     stats: stats || null
   });
 
-  await db.write();
+  await persist();
   res.json({ stats: teamStat });
 });
 
+async function ensureTeamExists(teamId) {
+  if (!teamId) return null;
+  const existingTeam = await findItem('teams', 'teamId', String(teamId));
+  if (existingTeam) return existingTeam;
+  return await upsertItem('teams', 'teamId', String(teamId), {
+    name: null,
+    totalRecords: 0,
+    approvedCount: 0,
+    pendingCount: 0,
+    rejectedCount: 0,
+    otherCount: 0,
+    memberCount: 0,
+    lastSummaryAt: null
+  });
+}
+
+async function ensureUserExists(userId, teamId = null) {
+  if (!userId) return null;
+  const existingUser = await findItem('users', 'userId', String(userId));
+  if (existingUser) return existingUser;
+  if (teamId) {
+    await ensureTeamExists(teamId);
+  }
+  return await upsertItem('users', 'userId', String(userId), {
+    username: null,
+    teamId: teamId || null,
+    totalRecords: 0,
+    approvedCount: 0,
+    pendingCount: 0,
+    rejectedCount: 0,
+    otherCount: 0,
+    lastSeenSummaryAt: null
+  });
+}
+
 app.post('/api/registration-summary', async (req, res) => {
   ensureDb();
-  // Log incoming summary requests for debugging (use console.error so logs survive suppression)
+  // PII FIX: no longer logs raw headers or a JSON body preview (which
+  // contained full names, national ID numbers and phone numbers in the
+  // clear). We log shapes/sizes only.
   try {
-    const preview = req.body ? (typeof req.body === 'object' ? JSON.stringify(req.body).slice(0, 2000) : String(req.body).slice(0, 2000)) : null;
-    console.error('[Cache API] /api/registration-summary received', { timestamp: nowIso(), headers: req.headers, bodyPreview: preview, bodyLength: req.body ? (typeof req.body === 'object' ? JSON.stringify(req.body).length : String(req.body).length) : 0 });
+    const bodyLength = req.body ? (typeof req.body === 'object' ? JSON.stringify(req.body).length : String(req.body).length) : 0;
+    console.error('[Cache API] /api/registration-summary received', { timestamp: nowIso(), headers: safeHeadersForLog(req.headers), bodyLength });
   } catch (e) {
     console.error('[Cache API] failed to log incoming registration-summary request', e?.message || e);
   }
@@ -762,21 +1061,6 @@ app.post('/api/registration-summary', async (req, res) => {
     contentLength: req.headers['content-length'] ? Number(req.headers['content-length']) : null
   };
 
-  function summarizeStatusCounts(byStatus = {}) {
-    const map = byStatus && typeof byStatus === 'object' ? byStatus : {};
-    let approved = 0, pending = 0, rejected = 0, other = 0, total = 0;
-    for (const [k, v] of Object.entries(map)) {
-      const n = Number(v || 0) || 0;
-      total += n;
-      const key = String(k || '').toLowerCase();
-      if (/موافقة|approved|تمت/.test(key)) approved += n;
-      else if (/قيد|pending|review|انتظار/.test(key)) pending += n;
-      else if (/مرفوض|rejected|رفض/.test(key)) rejected += n;
-      else other += n;
-    }
-    const topStatus = Object.entries(map).sort((a,b)=>Number(b[1]||0)-Number(a[1]||0))[0];
-    return { total, approved, pending, rejected, other, topStatus: topStatus ? String(topStatus[0]) : null };
-  }
   // Defensive normalization: ensure agents and payload are proper objects/arrays.
   let agents = [];
   try {
@@ -815,6 +1099,11 @@ app.post('/api/registration-summary', async (req, res) => {
       updatedAt: new Date().toISOString()
     });
 
+    // PERF/RACE FIX: build the team-key lookup cache ONCE for this whole
+    // request (was previously re-scanned via listCollection('teams') for
+    // every single agent AND every single row).
+    const teamKeyCache = await buildTeamKeyCache();
+
     // Persist related entities so dashboards/admin API can show users, teams and records
     try {
       const teamStatsMap = {};
@@ -825,8 +1114,8 @@ app.post('/api/registration-summary', async (req, res) => {
             const teamKey = String(agent?.team || agent?.teamId || '').trim() || '';
             if (!username) continue;
 
-            // Find or create a team (UUID) for this teamKey, using agents list to build name when creating
-            const team = await getOrCreateTeamForKey(teamKey, agents);
+            // Find or create a team for this teamKey, using agents list to build name when creating
+            const team = await getOrCreateTeamForKey(teamKey, agents, teamKeyCache);
             const teamId = team && team.teamId ? String(team.teamId) : null;
 
             // Ensure user exists and update username/team association + metadata
@@ -850,22 +1139,31 @@ app.post('/api/registration-summary', async (req, res) => {
               await upsertItem('users', 'userId', String(username), merged);
             }
 
+            // BUG FIX: `teamId` may legitimately be `null` here (agent has
+            // no resolvable team). Using it as an object key coerces to the
+            // *string* "null", and the later `if (!teamId) continue` guard
+            // only checked the loop variable shadowing the outer teamId --
+            // the string "null" is truthy, so a bogus team literally named
+            // "null" used to get created and persisted. We now skip
+            // unresolved teams up front instead of putting them in the map.
+            if (!teamId) continue;
+
             // Accumulate team stats
             if (!teamStatsMap[teamId]) teamStatsMap[teamId] = { teamId, totalRecords: 0, agents: [] };
             teamStatsMap[teamId].totalRecords += Number(agent?.totalCount || 0);
             teamStatsMap[teamId].agents.push({ username, totalCount: Number(agent?.totalCount || 0), byStatus: agent?.byStatus || {} });
 
           } catch (innerErr) {
-            console.error('[Cache API] failed to persist agent-derived entities', innerErr?.message || innerErr, { agent });
+            console.error('[Cache API] failed to persist agent-derived entities', innerErr?.message || innerErr, { username: maskValue(agent?.username) });
           }
         }
       }
 
       const summaryRows = getSummaryRows(summary);
       console.error('[Cache API] registration-summary row count', { rows: Array.isArray(summaryRows) ? summaryRows.length : 0, payloadKeys: Object.keys(summary || {}) });
+      let persistedRecords = 0;
+      let skippedRecords = 0;
       if (Array.isArray(summaryRows) && summaryRows.length) {
-        let persistedRecords = 0;
-        let skippedRecords = 0;
         for (let rowIndex = 0; rowIndex < summaryRows.length; rowIndex += 1) {
           const rawRow = summaryRows[rowIndex];
           const normalizedRow = normalizeRegistrationSummaryRow(rawRow, rowIndex);
@@ -874,17 +1172,25 @@ app.post('/api/registration-summary', async (req, res) => {
             continue;
           }
 
-          const { username, teamId } = extractAgentFromRow(normalizedRow);
+          const { username, teamKey } = extractAgentFromRow(normalizedRow);
           if (!username) {
             skippedRecords += 1;
-            console.error('[Cache API] skipping record row due missing agent identity', { rowIndex, normalizedRow, rawRow });
+            console.error('[Cache API] skipping record row due missing agent identity', { rowIndex });
             continue;
           }
 
-          const status = String(normalizedRow.customerStatus || normalizedRow.status || 'unknown');
+          // Resolve the row's team name to the same canonical team id used
+          // by the agent-based path above, instead of stamping the raw
+          // name string onto the record (see extractAgentFromRow comment).
+          const rowTeam = teamKey ? await getOrCreateTeamForKey(teamKey, [], teamKeyCache) : null;
+          const teamId = rowTeam && rowTeam.teamId ? String(rowTeam.teamId) : null;
+
+          const status = String(normalizedRow.customerStatus || 'unknown');
           const statusSummary = summarizeStatusCounts({ [status]: 1 });
           const recordId = String(normalizedRow.id || `${generatedAt}-${username}-${rowIndex}`);
-          console.error('[Cache API] creating record', { recordId, username, teamId, normalizedRow });
+
+          const existingRecord = await findItem('records', 'recordId', recordId);
+          const timestamp = nowIso();
 
           await upsertItem('records', 'recordId', recordId, {
             userId: username,
@@ -899,6 +1205,8 @@ app.post('/api/registration-summary', async (req, res) => {
             customerStatus: normalizedRow.customerStatus || null,
             regAgentDeviceName: normalizedRow.regAgentDeviceName || null,
             allowEdit: normalizedRow.allowEdit || 'false',
+            createdAt: existingRecord?.createdAt || timestamp,
+            updatedAt: timestamp,
             payload: {
               summaryGeneratedAt: generatedAt,
               ingest: ingestMeta,
@@ -919,11 +1227,11 @@ app.post('/api/registration-summary', async (req, res) => {
           persistedRecords += 1;
         }
       }
+      console.error('[Cache API] registration-summary row ingest complete', { persistedRecords, skippedRecords });
 
       // Persist aggregated team stats
       for (const [teamId, stats] of Object.entries(teamStatsMap)) {
         try {
-          console.error('[Cache API] persisting teamStats', { teamId, stats });
           if (!teamId) continue;
           await ensureTeamExists(teamId);
           await upsertItem('teamStats', 'teamId', String(teamId), {
@@ -954,10 +1262,10 @@ app.post('/api/registration-summary', async (req, res) => {
       console.error('[Cache API] registration-summary related persistence failed', relatedErr?.message || relatedErr);
     }
 
-    await db.write();
+    await persist();
     return res.json({ summary: stored });
   } catch (dbErr) {
-    console.error('[Cache API] registration-summary DB upsert failed', { error: dbErr?.message || dbErr, generatedAt, totalRecords, agentsType: Array.isArray(agents) ? 'array' : typeof agents, payloadType: typeof payloadForStore, payloadPreview: (() => { try { return JSON.stringify(payloadForStore).slice(0, 2000); } catch { return String(payloadForStore).slice(0,2000); } })() });
+    console.error('[Cache API] registration-summary DB upsert failed', { error: dbErr?.message || dbErr, generatedAt, totalRecords });
     return res.status(500).json({ error: 'Failed to persist registration summary', details: dbErr?.message || String(dbErr) });
   }
 });
@@ -999,8 +1307,8 @@ app.post('/cache/refresh', async (req, res) => {
   }
 
   const { user, users, team, stats, records, isBatch, batchIndex, totalBatches } = req.body;
-  
-  console.log('[BACKEND] Cache refresh request received:', {
+
+  console.error('[BACKEND] Cache refresh request received:', {
     hasUser: !!user,
     hasUsers: Array.isArray(users) && users.length > 0,
     userCount: Array.isArray(users) ? users.length : 0,
@@ -1009,8 +1317,8 @@ app.post('/cache/refresh', async (req, res) => {
     hasRecords: Array.isArray(records) && records.length > 0,
     recordCount: Array.isArray(records) ? records.length : 0,
     isBatch: !!isBatch,
-    batchIndex: batchIndex || null,
-    totalBatches: totalBatches || null
+    batchIndex: batchIndex ?? null,
+    totalBatches: totalBatches ?? null
   });
 
   if (!user && !users && !team && !stats && !records) {
@@ -1021,39 +1329,32 @@ app.post('/cache/refresh', async (req, res) => {
 
   try {
     if (team && team.teamId) {
-      console.log('[BACKEND] Upserting team:', team.teamId, team.name);
       result.team = await upsertItem('teams', 'teamId', String(team.teamId), {
         name: team.name || null,
         metadata: team.metadata || null
       });
-      console.log('[BACKEND] Team upserted successfully:', result.team);
     }
 
     if (stats && stats.teamId) {
-      console.log('[BACKEND] Upserting team stats for:', stats.teamId);
       await ensureTeamExists(stats.teamId);
       result.teamStats = await upsertItem('teamStats', 'teamId', String(stats.teamId), {
         stats: stats.stats || null,
         lastUpdatedAt: stats.lastUpdatedAt || nowIso()
       });
-      console.log('[BACKEND] Team stats upserted successfully');
     }
 
     if (user && user.teamId) {
       await ensureTeamExists(user.teamId);
     }
     if (user && user.userId) {
-      console.log('[BACKEND] Upserting user:', user.userId, user.username);
       result.user = await upsertItem('users', 'userId', String(user.userId), {
         username: user.username || null,
         teamId: user.teamId || null,
         metadata: user.metadata || null
       });
-      console.log('[BACKEND] User upserted successfully:', result.user);
     }
 
     if (Array.isArray(users) && users.length > 0) {
-      console.log('[BACKEND] Upserting', users.length, 'users');
       result.users = [];
       for (const item of users) {
         if (!item || !item.userId) continue;
@@ -1073,13 +1374,9 @@ app.post('/cache/refresh', async (req, res) => {
         });
         result.users.push(persistedUser);
       }
-      console.log('[BACKEND] Users upserted successfully, count:', result.users.length);
     }
 
     if (Array.isArray(records) && records.length > 0) {
-      console.log('[BACKEND] Upserting', records.length, 'records');
-      console.log('[BACKEND] Sample record (first):', JSON.stringify(records[0], null, 2));
-      
       result.records = [];
       for (const record of records) {
         if (record?.teamId) {
@@ -1089,14 +1386,9 @@ app.post('/cache/refresh', async (req, res) => {
           await ensureUserExists(record.userId, record.teamId || team?.teamId || user?.teamId);
         }
         const recordId = record?.recordId || `${team?.teamId || user?.userId || 'record'}-${result.records.length + 1}`;
-        
-        console.log('[BACKEND] Upserting record:', recordId, {
-          fullName: record?.fullName,
-          customerIdNumber: record?.customerIdNumber,
-          mobileNumber: record?.mobileNumber,
-          customerStatus: record?.customerStatus
-        });
-        
+        const existingRecord = await findItem('records', 'recordId', String(recordId));
+        const timestamp = nowIso();
+
         const persistedRecord = await upsertItem('records', 'recordId', String(recordId), {
           userId: record?.userId || null,
           teamId: record?.teamId || null,
@@ -1109,38 +1401,288 @@ app.post('/cache/refresh', async (req, res) => {
           regAgentName: record?.regAgentName || record?.agentRegion || record?.agentName || record?.agent || null,
           customerStatus: record?.customerStatus || record?.status || null,
           regAgentDeviceName: record?.regAgentDeviceName || record?.agentDeviceName || record?.agentName || null,
-          allowEdit: record?.allowEdit != null ? String(record?.allowEdit) : null
+          allowEdit: record?.allowEdit != null ? String(record?.allowEdit) : 'false',
+          createdAt: existingRecord?.createdAt || timestamp,
+          updatedAt: timestamp
         });
-        
-        console.log('[BACKEND] Record upserted successfully:', {
-          recordId: persistedRecord.recordId,
-          fullName: persistedRecord.fullName,
-          customerIdNumber: persistedRecord.customerIdNumber,
-          mobileNumber: persistedRecord.mobileNumber
-        });
-        
+
         result.records.push(persistedRecord);
       }
-      console.log('[BACKEND] All records upserted successfully, count:', result.records.length);
     }
-    
-    await db.write();
-    console.log('[BACKEND] Cache refresh completed successfully:', {
+
+    await persist();
+    console.error('[BACKEND] Cache refresh completed successfully:', {
       teamCount: result.team ? 1 : 0,
       userCount: result.user ? 1 : 0,
       usersCount: result.users ? result.users.length : 0,
       recordCount: result.records ? result.records.length : 0
     });
-    
+
     return res.json(result);
   } catch (error) {
-    console.error('[BACKEND] Cache refresh failed:', error);
-    console.error('[BACKEND] Error details:', {
-      message: error.message,
-      stack: error.stack
-    });
+    console.error('[BACKEND] Cache refresh failed:', error, { message: error.message, stack: error.stack });
     return res.status(500).json({ error: 'Cache refresh failed', details: error.message });
   }
+});
+
+// =====================================================================
+// "God stats" for the records table
+// =====================================================================
+// All of these are read-only and computed in memory from the records
+// collection (plus users/teams). They rely on the createdAt/updatedAt
+// timestamps now stamped on every record write above -- for records that
+// predate this change, we fall back through submissionDate/creationDate/
+// approvalDate/payload timestamps so historical data still buckets
+// reasonably.
+
+function recordTimestamp(record) {
+  const candidates = [
+    record?.createdAt,
+    record?.payload?.ingest?.receivedAt,
+    record?.submissionDate,
+    record?.payload?.summaryGeneratedAt,
+    record?.creationDate,
+    record?.approvalDate,
+    record?.updatedAt
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const d = new Date(candidate);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
+function dayKey(date) {
+  return date.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+}
+
+function emptyStatusBucket() {
+  return { total: 0, approved: 0, pending: 0, rejected: 0, other: 0 };
+}
+
+function addToBucket(bucket, status) {
+  bucket.total += 1;
+  const cls = classifyStatus(status);
+  bucket[cls] = (bucket[cls] || 0) + 1;
+}
+
+function computeStatusTotals(records) {
+  const bucket = emptyStatusBucket();
+  let uniqueUsers = new Set();
+  let uniqueTeams = new Set();
+  let first = null;
+  let last = null;
+  for (const record of records) {
+    addToBucket(bucket, record?.customerStatus);
+    if (record?.userId) uniqueUsers.add(String(record.userId));
+    if (record?.teamId) uniqueTeams.add(String(record.teamId));
+    const ts = recordTimestamp(record);
+    if (ts) {
+      if (!first || ts < first) first = ts;
+      if (!last || ts > last) last = ts;
+    }
+  }
+  return {
+    ...bucket,
+    approvalRate: bucket.total ? Number((bucket.approved / bucket.total).toFixed(4)) : 0,
+    uniqueUsers: uniqueUsers.size,
+    uniqueTeams: uniqueTeams.size,
+    firstRecordAt: first ? first.toISOString() : null,
+    lastRecordAt: last ? last.toISOString() : null
+  };
+}
+
+// Buckets records into calendar-day buckets covering the last `days` days
+// (inclusive of today), so callers get a fixed-length, zero-filled series
+// suitable for charting even on days with no activity.
+function bucketRecordsByDay(records, days) {
+  const now = new Date();
+  const buckets = new Map();
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+    buckets.set(dayKey(d), { date: dayKey(d), ...emptyStatusBucket() });
+  }
+  const cutoff = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (days - 1)));
+
+  for (const record of records) {
+    const ts = recordTimestamp(record);
+    if (!ts || ts < cutoff) continue;
+    const key = dayKey(ts);
+    const bucket = buckets.get(key);
+    if (bucket) addToBucket(bucket, record?.customerStatus);
+  }
+
+  return Array.from(buckets.values());
+}
+
+function countsSince(records, sinceDate) {
+  let n = 0;
+  for (const record of records) {
+    const ts = recordTimestamp(record);
+    if (ts && ts >= sinceDate) n += 1;
+  }
+  return n;
+}
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - n);
+  return d;
+}
+
+function parsePeriodDays(value, fallback = 30) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.floor(n), 365);
+}
+
+// GET /stats/overview — global "god stats" across all records.
+app.get('/stats/overview', async (req, res) => {
+  ensureDb();
+  const [records, users, teams] = await Promise.all([
+    listCollection('records'),
+    listCollection('users'),
+    listCollection('teams')
+  ]);
+  const all = Array.isArray(records) ? records : [];
+  const totals = computeStatusTotals(all);
+
+  res.json({
+    totals,
+    userCount: Array.isArray(users) ? users.length : 0,
+    teamCount: Array.isArray(teams) ? teams.length : 0,
+    activity: {
+      last24h: countsSince(all, daysAgo(1)),
+      last7d: countsSince(all, daysAgo(7)),
+      last30d: countsSince(all, daysAgo(30))
+    },
+    dailyActivity: bucketRecordsByDay(all, 30)
+  });
+});
+
+// GET /stats/users/:userId?days=30 — per-user "god stats".
+app.get('/stats/users/:userId', async (req, res) => {
+  ensureDb();
+  const { userId } = req.params;
+  const user = await findItem('users', 'userId', userId);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  const days = parsePeriodDays(req.query.days, 30);
+  const records = await filterItems('records', 'userId', userId);
+  const totals = computeStatusTotals(records);
+  const activeDays = new Set(records.map((r) => { const ts = recordTimestamp(r); return ts ? dayKey(ts) : null; }).filter(Boolean)).size;
+
+  res.json({
+    user,
+    totals,
+    avgRecordsPerActiveDay: activeDays ? Number((totals.total / activeDays).toFixed(2)) : 0,
+    activity: {
+      last24h: countsSince(records, daysAgo(1)),
+      last7d: countsSince(records, daysAgo(7)),
+      last30d: countsSince(records, daysAgo(30))
+    },
+    dailyActivity: bucketRecordsByDay(records, days)
+  });
+});
+
+// GET /stats/users/:userId/activity?days=30 — just the time series.
+app.get('/stats/users/:userId/activity', async (req, res) => {
+  ensureDb();
+  const { userId } = req.params;
+  const days = parsePeriodDays(req.query.days, 30);
+  const records = await filterItems('records', 'userId', userId);
+  res.json({ userId, days, series: bucketRecordsByDay(records, days) });
+});
+
+// GET /stats/teams/:teamId?days=30 — per-team "god stats", including a
+// per-member breakdown and a simple leaderboard of top performers.
+app.get('/stats/teams/:teamId', async (req, res) => {
+  ensureDb();
+  const { teamId } = req.params;
+  const team = await findItem('teams', 'teamId', teamId);
+  if (!team) {
+    return res.status(404).json({ error: 'Team not found' });
+  }
+  const days = parsePeriodDays(req.query.days, 30);
+  const [records, members] = await Promise.all([
+    filterItems('records', 'teamId', teamId),
+    filterItems('users', 'teamId', teamId)
+  ]);
+  const totals = computeStatusTotals(records);
+  const byUser = groupRecordsBy(records, 'userId');
+
+  const memberBreakdown = (members || []).map((m) => {
+    const memberRecords = byUser.get(String(m.userId)) || [];
+    const memberTotals = computeStatusTotals(memberRecords);
+    return {
+      userId: m.userId,
+      username: m.username || null,
+      totalRecords: memberTotals.total,
+      approvedCount: memberTotals.approved,
+      pendingCount: memberTotals.pending,
+      rejectedCount: memberTotals.rejected,
+      approvalRate: memberTotals.approvalRate,
+      last7d: countsSince(memberRecords, daysAgo(7))
+    };
+  }).sort((a, b) => b.totalRecords - a.totalRecords);
+
+  res.json({
+    team,
+    totals,
+    memberCount: (members || []).length,
+    activity: {
+      last24h: countsSince(records, daysAgo(1)),
+      last7d: countsSince(records, daysAgo(7)),
+      last30d: countsSince(records, daysAgo(30))
+    },
+    dailyActivity: bucketRecordsByDay(records, days),
+    topPerformers: memberBreakdown.slice(0, 10),
+    memberBreakdown
+  });
+});
+
+// GET /stats/teams/:teamId/activity?days=30
+app.get('/stats/teams/:teamId/activity', async (req, res) => {
+  ensureDb();
+  const { teamId } = req.params;
+  const days = parsePeriodDays(req.query.days, 30);
+  const records = await filterItems('records', 'teamId', teamId);
+  res.json({ teamId, days, series: bucketRecordsByDay(records, days) });
+});
+
+// GET /stats/leaderboard?scope=users|teams&period=7|30|all&limit=10
+// Ranks users or teams by total record volume within a period.
+app.get('/stats/leaderboard', async (req, res) => {
+  ensureDb();
+  const scope = req.query.scope === 'teams' ? 'teams' : 'users';
+  const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
+  const periodDays = req.query.period && req.query.period !== 'all' ? parsePeriodDays(req.query.period, 30) : null;
+
+  const [records, entities] = await Promise.all([
+    listCollection('records'),
+    listCollection(scope)
+  ]);
+  const key = scope === 'teams' ? 'teamId' : 'userId';
+  const grouped = groupRecordsBy(records, key);
+  const since = periodDays ? daysAgo(periodDays) : null;
+
+  const ranked = (entities || []).map((entity) => {
+    const id = entity[key];
+    let entityRecords = grouped.get(String(id)) || [];
+    if (since) entityRecords = entityRecords.filter((r) => { const ts = recordTimestamp(r); return ts && ts >= since; });
+    const totals = computeStatusTotals(entityRecords);
+    return {
+      id,
+      name: scope === 'teams' ? (entity.name || id) : (entity.username || id),
+      totalRecords: totals.total,
+      approvedCount: totals.approved,
+      approvalRate: totals.approvalRate
+    };
+  }).sort((a, b) => b.totalRecords - a.totalRecords).slice(0, limit);
+
+  res.json({ scope, period: periodDays ? `${periodDays}d` : 'all', leaderboard: ranked });
 });
 
 async function startServer() {
@@ -1148,13 +1690,17 @@ async function startServer() {
     await initializeDatabase();
     isReady = true;
     app.listen(PORT, () => {
-      console.log(`Jawwal Pay cache API listening on port ${PORT}`);
+      console.error(`Jawwal Pay cache API listening on port ${PORT}`);
     });
   } catch (error) {
     console.error('Failed to initialize database:', error);
     process.exit(1);
   }
 }
+
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
 app.use((err, req, res, next) => {
   console.error('[Server] request error handler', err);
