@@ -107,13 +107,15 @@ async function createPgDatabase(connectionString) {
     },
     async upsertItem(collection, key, value, item) {
       if (collection === 'users') {
-        const q = `INSERT INTO users (userId, username, teamId, totalRecords, approvedCount, pendingCount, rejectedCount, otherCount, lastSeenSummaryAt, metadata, createdAt, updatedAt)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),now())
-          ON CONFLICT (userId) DO UPDATE SET username = EXCLUDED.username, teamId = EXCLUDED.teamId, totalRecords = EXCLUDED.totalRecords, approvedCount = EXCLUDED.approvedCount, pendingCount = EXCLUDED.pendingCount, rejectedCount = EXCLUDED.rejectedCount, otherCount = EXCLUDED.otherCount, lastSeenSummaryAt = EXCLUDED.lastSeenSummaryAt, metadata = EXCLUDED.metadata, updatedAt = now()
+        const q = `INSERT INTO users (userId, username, email, originalAgentName, teamId, totalRecords, approvedCount, pendingCount, rejectedCount, otherCount, lastSeenSummaryAt, metadata, createdAt, updatedAt)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now(),now())
+          ON CONFLICT (userId) DO UPDATE SET username = EXCLUDED.username, email = EXCLUDED.email, originalAgentName = EXCLUDED.originalAgentName, teamId = EXCLUDED.teamId, totalRecords = EXCLUDED.totalRecords, approvedCount = EXCLUDED.approvedCount, pendingCount = EXCLUDED.pendingCount, rejectedCount = EXCLUDED.rejectedCount, otherCount = EXCLUDED.otherCount, lastSeenSummaryAt = EXCLUDED.lastSeenSummaryAt, metadata = EXCLUDED.metadata, updatedAt = now()
           RETURNING *`;
         const res = await executeQuery(q, [
           String(value),
           item.username || null,
+          item.email || null,
+          item.originalAgentName || null,
           item.teamId || null,
           item.totalRecords || 0,
           item.approvedCount || 0,
@@ -278,13 +280,13 @@ async function createPgDatabase(connectionString) {
     // cache/refresh payload.
     async upsertUsersBulk(users) {
       if (!Array.isArray(users) || users.length === 0) return [];
-      const colList = ['userId', 'username', 'teamId', 'totalRecords', 'approvedCount', 'pendingCount',
+      const colList = ['userId', 'username', 'email', 'originalAgentName', 'teamId', 'totalRecords', 'approvedCount', 'pendingCount',
         'rejectedCount', 'otherCount', 'lastSeenSummaryAt', 'metadata'];
       const values = [];
       const placeholders = users.map((u, i) => {
         const base = i * colList.length;
         values.push(
-          String(u.userId), u.username || null, u.teamId || null,
+          String(u.userId), u.username || null, u.email || null, u.originalAgentName || null, u.teamId || null,
           u.totalRecords || 0, u.approvedCount || 0, u.pendingCount || 0,
           u.rejectedCount || 0, u.otherCount || 0, u.lastSeenSummaryAt || null,
           u.metadata ? JSON.stringify(u.metadata) : null
@@ -294,7 +296,7 @@ async function createPgDatabase(connectionString) {
       const q = `INSERT INTO users (${colList.join(',')}, createdAt, updatedAt)
         VALUES ${placeholders.join(',')}
         ON CONFLICT (userId) DO UPDATE SET
-          username = EXCLUDED.username, teamId = EXCLUDED.teamId, totalRecords = EXCLUDED.totalRecords,
+          username = EXCLUDED.username, email = EXCLUDED.email, originalAgentName = EXCLUDED.originalAgentName, teamId = EXCLUDED.teamId, totalRecords = EXCLUDED.totalRecords,
           approvedCount = EXCLUDED.approvedCount, pendingCount = EXCLUDED.pendingCount,
           rejectedCount = EXCLUDED.rejectedCount, otherCount = EXCLUDED.otherCount,
           lastSeenSummaryAt = EXCLUDED.lastSeenSummaryAt, metadata = EXCLUDED.metadata, updatedAt = now()
@@ -394,6 +396,8 @@ async function ensureCurrentSchema(pool) {
   await executeDbQuery(pool, `CREATE TABLE IF NOT EXISTS users (
       userId text PRIMARY KEY,
       username text,
+      email text,
+      originalAgentName text,
       teamId text,
       totalRecords integer DEFAULT 0,
       approvedCount integer DEFAULT 0,
