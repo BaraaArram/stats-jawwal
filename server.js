@@ -126,7 +126,8 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: nowIso() });
 });
 
-app.get('/admin', requireAdminAuth, (req, res) => {
+// Serve the admin HTML without authentication (login screen handles auth)
+app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
