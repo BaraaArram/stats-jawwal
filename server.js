@@ -976,6 +976,50 @@ app.get('/users/:userId/records', async (req, res) => {
   res.json({ userId: req.params.userId, records });
 });
 
+// --- Sync watermark -------------------------------------------------
+// Tells a client "where did we stop uploading" for a given user, computed
+// live from the records actually stored server-side -- not from any
+// per-device local state. This is what makes incremental sync consistent
+// across devices: whichever device asks, it gets the same answer, because
+// the answer is derived from the shared upload history rather than a
+// local cursor that only one browser knows about.
+//
+// watermark.submissionDate is the newest submissionDate among this user's
+// stored records; idsAtMaxDate is every recordId that shares that exact
+// date, so a client can tell which of that day's rows it already has
+// (submission dates are day-grained on the source portal, so re-asking
+// for "on or after that date" will hand the whole day back again).
+function computeSubmissionWatermark(records) {
+  let maxTime = -Infinity;
+  let maxDateStr = null;
+  let idsAtMax = new Set();
+
+  for (const record of Array.isArray(records) ? records : []) {
+    const raw = record?.submissionDate;
+    if (!raw) continue;
+    const t = new Date(raw).getTime();
+    if (Number.isNaN(t)) continue;
+    const id = record.recordId != null ? String(record.recordId) : null;
+    if (t > maxTime) {
+      maxTime = t;
+      maxDateStr = raw;
+      idsAtMax = id ? new Set([id]) : new Set();
+    } else if (t === maxTime && id) {
+      idsAtMax.add(id);
+    }
+  }
+
+  if (!maxDateStr) return null;
+  return { submissionDate: maxDateStr, idsAtMaxDate: Array.from(idsAtMax) };
+}
+
+app.get('/users/:userId/sync-watermark', async (req, res) => {
+  ensureDb();
+  const records = await filterItems('records', 'userId', req.params.userId);
+  const watermark = computeSubmissionWatermark(records);
+  res.json({ userId: req.params.userId, watermark });
+});
+
 app.get('/team-stats/:teamId', async (req, res) => {
   ensureDb();
   const stats = await findItem('teamStats', 'teamId', req.params.teamId);
