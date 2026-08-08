@@ -103,6 +103,12 @@
         border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
         background: var(--panel-2); color: var(--text); font-size: 1rem;
       }
+      .login-field input { display: none; }
+      .login-field input:not([type="hidden"]) { display: block; }
+      .login-field input {
+        border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+        background: var(--panel-2); color: var(--text); font-size: 1rem;
+      }
       .login-field input:focus { outline: none; border-color: var(--accent); }
       .login-btn {
         border: none; border-radius: 10px; padding: 12px 16px; cursor: pointer;
@@ -134,6 +140,10 @@
         <p>Enter your admin API key to access the console</p>
         <div class="login-error" id="loginError">Invalid API key. Please try again.</div>
         <form class="login-form" id="loginForm">
+          <div class="login-field">
+            <label for="username">Username (optional)</label>
+            <input type="text" id="username" placeholder="Your username (for identification)" autocomplete="username">
+          </div>
           <div class="login-field">
             <label for="apiKey">Admin API Key</label>
             <input type="password" id="apiKey" placeholder="Enter your admin API key" required autocomplete="current-password">
