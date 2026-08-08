@@ -234,7 +234,7 @@ async function createPgDatabase(connectionString) {
       const userIds = [...map.keys()];
       const teamIds = userIds.map((id) => map.get(id));
       const q = `INSERT INTO users (userId, teamId, createdAt, updatedAt)
-        SELECT * FROM unnest($1::text[], $2::text[]) AS t(userId, teamId)
+        SELECT userId, teamId, now(), now() FROM unnest($1::text[], $2::text[]) AS t(userId, teamId)
         ON CONFLICT (userId) DO NOTHING`;
       await executeQuery(q, [userIds, teamIds]);
     },
