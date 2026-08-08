@@ -547,29 +547,51 @@ function classifyStatus(rawStatus) {
   return 'other';
 }
 
-function normalizeCounts(payload) {
-  if (!payload || typeof payload !== 'object') return { total: 0, approved: 0, pending: 0, rejected: 0, other: 0 };
-  const agent = payload.agent && typeof payload.agent === 'object' ? payload.agent : payload;
-  const byStatus = agent.byStatus && typeof agent.byStatus === 'object' ? agent.byStatus : {};
+function normalizeCounts(recordOrPayload) {
+  if (!recordOrPayload || typeof recordOrPayload !== 'object') {
+    return { total: 0, approved: 0, pending: 0, rejected: 0, other: 0 };
+  }
+
+  const byStatus = (recordOrPayload.payload && recordOrPayload.payload.agent && typeof recordOrPayload.payload.agent.byStatus === 'object')
+    ? recordOrPayload.payload.agent.byStatus
+    : (recordOrPayload.byStatus && typeof recordOrPayload.byStatus === 'object')
+      ? recordOrPayload.byStatus
+      : null;
+
   let approved = 0;
   let pending = 0;
   let rejected = 0;
   let other = 0;
   let total = 0;
 
-  for (const [key, value] of Object.entries(byStatus)) {
-    const count = Number(value || 0) || 0;
-    total += count;
-    switch (classifyStatus(key)) {
-      case 'approved': approved += count; break;
-      case 'pending': pending += count; break;
-      case 'rejected': rejected += count; break;
-      default: other += count; break;
+  if (byStatus) {
+    for (const [key, value] of Object.entries(byStatus)) {
+      const count = Number(value || 0) || 0;
+      total += count;
+      switch (classifyStatus(key)) {
+        case 'approved': approved += count; break;
+        case 'pending': pending += count; break;
+        case 'rejected': rejected += count; break;
+        default: other += count; break;
+      }
     }
   }
 
-  if (!total && Number(agent.totalCount || agent.totalRecords || 0)) {
-    total = Number(agent.totalCount || agent.totalRecords || 0);
+  const statusValue = recordOrPayload.customerStatus || recordOrPayload.status || null;
+  if (total === 0 && statusValue) {
+    const classification = classifyStatus(statusValue);
+    total = 1;
+    switch (classification) {
+      case 'approved': approved = 1; break;
+      case 'pending': pending = 1; break;
+      case 'rejected': rejected = 1; break;
+      default: other = 1; break;
+    }
+    return { total, approved, pending, rejected, other };
+  }
+
+  if (!total && Number(recordOrPayload.totalCount || recordOrPayload.totalRecords || 0)) {
+    total = Number(recordOrPayload.totalCount || recordOrPayload.totalRecords || 0);
   }
 
   return { total, approved, pending, rejected, other };
@@ -889,14 +911,8 @@ app.get('/records/exist', async (req, res) => {
       return res.json({ existingIds: [] });
     }
 
-    // Check which records exist
-    const existingIds = [];
-    for (const id of idArray) {
-      const record = await findItem('records', 'recordId', id);
-      if (record) {
-        existingIds.push(id);
-      }
-    }
+    const matchingRecords = await filterItems('records', 'recordId', idArray);
+    const existingIds = matchingRecords.map(record => record.recordId).filter(Boolean);
 
     console.error('[BACKEND] Checked existence of', idArray.length, 'records, found', existingIds.length, 'existing');
     res.json({ existingIds });
@@ -1231,9 +1247,7 @@ app.post('/api/registration-summary', async (req, res) => {
 
           const status = String(normalizedRow.customerStatus || 'unknown');
           const statusSummary = summarizeStatusCounts({ [status]: 1 });
-          const recordId = String(normalizedRow.id || `${generatedAt}-${username}-${rowIndex}`);
-
-          const existingRecord = await findItem('records', 'recordId', recordId);
+          const recordId = normalizedRow.id ? String(normalizedRow.id) : `${generatedAt}-${username}-${rowIndex}`;
           const timestamp = nowIso();
 
           await upsertItem('records', 'recordId', recordId, {
@@ -1249,7 +1263,7 @@ app.post('/api/registration-summary', async (req, res) => {
             customerStatus: normalizedRow.customerStatus || null,
             regAgentDeviceName: normalizedRow.regAgentDeviceName || null,
             allowEdit: normalizedRow.allowEdit || 'false',
-            createdAt: existingRecord?.createdAt || timestamp,
+            createdAt: timestamp,
             updatedAt: timestamp,
             payload: {
               summaryGeneratedAt: generatedAt,
@@ -1375,6 +1389,13 @@ app.post('/cache/refresh', async (req, res) => {
     if (team && team.teamId) {
       result.team = await upsertItem('teams', 'teamId', String(team.teamId), {
         name: team.name || null,
+        totalRecords: Number(team.totalRecords || 0),
+        approvedCount: Number(team.approvedCount || 0),
+        pendingCount: Number(team.pendingCount || 0),
+        rejectedCount: Number(team.rejectedCount || 0),
+        otherCount: Number(team.otherCount || 0),
+        memberCount: Number(team.memberCount || 0),
+        lastSummaryAt: team.lastSummaryAt || null,
         metadata: team.metadata || null
       });
     }
@@ -1394,6 +1415,12 @@ app.post('/cache/refresh', async (req, res) => {
       result.user = await upsertItem('users', 'userId', String(user.userId), {
         username: user.username || null,
         teamId: user.teamId || null,
+        totalRecords: Number(user.totalRecords || 0),
+        approvedCount: Number(user.approvedCount || 0),
+        pendingCount: Number(user.pendingCount || 0),
+        rejectedCount: Number(user.rejectedCount || 0),
+        otherCount: Number(user.otherCount || 0),
+        lastSeenSummaryAt: user.lastSeenSummaryAt || null,
         metadata: user.metadata || null
       });
     }

@@ -93,6 +93,18 @@ async function createPgDatabase(connectionString) {
       if (res.rows.length === 0) return null;
       return normalizeRow(collection, res.rows[0]);
     },
+    async findItems(collection, key, values) {
+      if (!isValidColumnName(key)) {
+        throw new Error(`Invalid column name: ${key}`);
+      }
+      if (!Array.isArray(values) || values.length === 0) {
+        return [];
+      }
+      const table = mapCollection(collection);
+      const q = `SELECT * FROM ${table} WHERE ${key} = ANY($1)`;
+      const res = await executeQuery(q, [values]);
+      return res.rows.map(r => normalizeRow(collection, r));
+    },
     async upsertItem(collection, key, value, item) {
       if (collection === 'users') {
         const q = `INSERT INTO users (userId, username, teamId, totalRecords, approvedCount, pendingCount, rejectedCount, otherCount, lastSeenSummaryAt, metadata, createdAt, updatedAt)
@@ -145,7 +157,7 @@ async function createPgDatabase(connectionString) {
         
         const q = `INSERT INTO records (recordId, userId, teamId, fullName, customerIdNumber, mobileNumber, creationDate, submissionDate, approvalDate, regAgentName, customerStatus, regAgentDeviceName, allowEdit, createdAt, updatedAt)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),now())
-          ON CONFLICT (recordId) DO UPDATE SET userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, fullName = EXCLUDED.fullName, customerIdNumber = EXCLUDED.customerIdNumber, mobileNumber = EXCLUDED.mobileNumber, creationDate = EXCLUDED.creationDate, submissionDate = EXCLUDED.submissionDate, approvalDate = EXCLUDED.approvalDate, regAgentName = EXCLUDED.regAgentName, customerStatus = EXCLUDED.customerStatus, regAgentDeviceName = EXCLUDED.regAgentDeviceName, allowEdit = EXCLUDED.allowEdit, updatedAt = now()
+          ON CONFLICT (recordId) DO UPDATE SET userId = EXCLUDED.userId, teamId = EXCLUDED.teamId, fullName = EXCLUDED.fullName, customerIdNumber = EXCLUDED.customerIdNumber, mobileNumber = EXCLUDED.mobileNumber, creationDate = EXCLUDED.creationDate, submissionDate = EXCLUDED.submissionDate, approvalDate = EXCLUDED.approvalDate, regAgentName = EXCLUDED.regAgentName, customerStatus = EXCLUDED.customerStatus, regAgentDeviceName = EXCLUDED.regAgentDeviceName, allowEdit = EXCLUDED.allowEdit, createdAt = COALESCE(records.createdAt, EXCLUDED.createdAt), updatedAt = now()
           RETURNING *`;
         const res = await executeQuery(q, [
           String(value),
@@ -200,8 +212,16 @@ async function createPgDatabase(connectionString) {
         throw new Error(`Invalid column name: ${key}`);
       }
       const table = mapCollection(collection);
-      const q = `SELECT * FROM ${table} WHERE ${key} = $1`;
-      const res = await executeQuery(q, [value]);
+      let q;
+      let params;
+      if (Array.isArray(value)) {
+        q = `SELECT * FROM ${table} WHERE ${key} = ANY($1)`;
+        params = [value];
+      } else {
+        q = `SELECT * FROM ${table} WHERE ${key} = $1`;
+        params = [value];
+      }
+      const res = await executeQuery(q, params);
       return res.rows.map(r => normalizeRow(collection, r));
     },
     async listCollection(collection) {
