@@ -311,6 +311,142 @@ app.delete('/admin/api/:collection/:id', requireAdminAuth, async (req, res) => {
   }
 });
 
+// User Performance Queries
+app.get('/admin/api/user-performance/dashboard', requireAdminAuth, async (req, res) => {
+  try {
+    // First, check if we have any records at all
+    const checkQuery = 'SELECT COUNT(*) as total, COUNT(customerstatus) as with_status FROM records';
+    const checkResult = await executeQuery(checkQuery);
+    console.log('[Server] Record count check:', checkResult.rows[0]);
+
+    // Check what status values actually exist
+    const statusQuery = 'SELECT DISTINCT customerstatus, COUNT(*) as count FROM records GROUP BY customerstatus';
+    const statusResult = await executeQuery(statusQuery);
+    console.log('[Server] Status values in database:', statusResult.rows);
+
+    const query = `
+      SELECT 
+          u.username,
+          u.originalagentname,
+          COUNT(*) AS total_records,
+          COUNT(*) FILTER (WHERE r.customerstatus = 'تمت الموافقة') AS approved,
+          ROUND(100.0 * COUNT(*) FILTER (WHERE r.customerstatus = 'تمت الموافقة') / COUNT(*), 2) AS approved_pct,
+          COUNT(*) FILTER (WHERE r.customerstatus = 'قيد المراجعة') AS pending,
+          ROUND(100.0 * COUNT(*) FILTER (WHERE r.customerstatus = 'قيد المراجعة') / COUNT(*), 2) AS pending_pct,
+          COUNT(*) FILTER (WHERE r.customerstatus = 'مرفوض') AS rejected,
+          ROUND(100.0 * COUNT(*) FILTER (WHERE r.customerstatus = 'مرفوض') / COUNT(*), 2) AS rejected_pct,
+          ROUND(
+              100.0 * COUNT(*) FILTER (WHERE r.customerstatus = 'تمت الموافقة') 
+              / NULLIF(COUNT(*) FILTER (WHERE r.customerstatus IN ('تمت الموافقة', 'مرفوض')), 0)
+          , 2) AS approval_rate_pct,
+          ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS workload_share_pct
+      FROM records r
+      JOIN users u ON r.userid = u.userid
+      GROUP BY u.username, u.originalagentname
+      ORDER BY total_records DESC
+    `;
+    
+    const result = await executeQuery(query);
+    console.log('[Server] Performance dashboard result:', result.rows);
+    res.json({ dashboard: result.rows, statusCheck: statusResult.rows });
+  } catch (error) {
+    console.error('Failed to fetch user performance dashboard:', error);
+    res.status(500).json({ error: 'Failed to fetch dashboard' });
+  }
+});
+
+app.get('/admin/api/user-performance/rankings', requireAdminAuth, async (req, res) => {
+  try {
+    const { type = 'productivity' } = req.query;
+    
+    let query = '';
+    if (type === 'productivity') {
+      query = `
+        SELECT 
+            u.username,
+            u.originalagentname,
+            COUNT(*) AS total_records,
+            ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS share_pct,
+            RANK() OVER (ORDER BY COUNT(*) DESC) AS rank
+        FROM records r
+        JOIN users u ON r.userid = u.userid
+        GROUP BY u.username, u.originalagentname
+        ORDER BY total_records DESC
+      `;
+    } else if (type === 'approval') {
+      query = `
+        SELECT 
+            u.username,
+            u.originalagentname,
+            COUNT(*) AS total_records,
+            COUNT(*) FILTER (WHERE r.customerstatus = 'تمت الموافقة') AS approved,
+            COUNT(*) FILTER (WHERE r.customerstatus = 'مرفوض') AS rejected,
+            ROUND(
+                100.0 * COUNT(*) FILTER (WHERE r.customerstatus = 'تمت الموافقة') 
+                / NULLIF(COUNT(*) FILTER (WHERE r.customerstatus IN ('تمت الموافقة', 'مرفوض')), 0)
+            , 2) AS approval_rate_pct,
+            RANK() OVER (
+                ORDER BY 
+                    COUNT(*) FILTER (WHERE r.customerstatus = 'تمت الموافقة') 
+                    / NULLIF(COUNT(*) FILTER (WHERE r.customerstatus IN ('تمت الموافقة', 'مرفوض')), 0) 
+                DESC NULLS LAST
+            ) AS rank
+        FROM records r
+        JOIN users u ON r.userid = u.userid
+        GROUP BY u.username, u.originalagentname
+        HAVING COUNT(*) FILTER (WHERE r.customerstatus IN ('تمت الموافقة', 'مرفوض')) > 0
+        ORDER BY approval_rate_pct DESC NULLS LAST
+      `;
+    } else if (type === 'rejection') {
+      query = `
+        SELECT 
+            u.username,
+            u.originalagentname,
+            COUNT(*) AS total_records,
+            COUNT(*) FILTER (WHERE r.customerstatus = 'مرفوض') AS rejected,
+            ROUND(100.0 * COUNT(*) FILTER (WHERE r.customerstatus = 'مرفوض') / COUNT(*), 2) AS rejection_pct,
+            RANK() OVER (ORDER BY COUNT(*) FILTER (WHERE r.customerstatus = 'مرفوض') DESC) AS rank
+        FROM records r
+        JOIN users u ON r.userid = u.userid
+        GROUP BY u.username, u.originalagentname
+        HAVING COUNT(*) FILTER (WHERE r.customerstatus = 'مرفوض') > 0
+        ORDER BY rejected DESC
+      `;
+    }
+    
+    const result = await executeQuery(query);
+    res.json({ rankings: result.rows, type });
+  } catch (error) {
+    console.error('Failed to fetch user performance rankings:', error);
+    res.status(500).json({ error: 'Failed to fetch rankings' });
+  }
+});
+
+app.get('/admin/api/user-performance/daily', requireAdminAuth, async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+          u.username,
+          u.originalagentname,
+          TO_DATE(r.submissiondate, 'DD/MM/YYYY') AS day,
+          COUNT(*) AS submissions,
+          COUNT(*) FILTER (WHERE r.customerstatus = 'تمت الموافقة') AS approved,
+          COUNT(*) FILTER (WHERE r.customerstatus = 'مرفوض') AS rejected,
+          COUNT(*) FILTER (WHERE r.customerstatus = 'قيد المراجعة') AS pending
+      FROM records r
+      JOIN users u ON r.userid = u.userid
+      GROUP BY u.username, u.originalagentname, TO_DATE(r.submissiondate, 'DD/MM/YYYY')
+      ORDER BY day DESC, submissions DESC
+    `;
+    
+    const result = await executeQuery(query);
+    res.json({ daily: result.rows });
+  } catch (error) {
+    console.error('Failed to fetch daily performance:', error);
+    res.status(500).json({ error: 'Failed to fetch daily performance' });
+  }
+});
+
 async function findItem(collection, key, value) {
   ensureDb();
   if (typeof db.findItem === 'function') {
@@ -620,14 +756,19 @@ function aggregateRecordStats(records = []) {
   if (!Array.isArray(records)) return result;
 
   for (const record of records) {
-    const payload = record && record.payload ? record.payload : {};
-    const counts = normalizeCounts(payload);
-    result.totalRecords += counts.total;
-    result.approvedCount += counts.approved;
-    result.pendingCount += counts.pending;
-    result.rejectedCount += counts.rejected;
-    result.otherCount += counts.other;
+    // Use the record's customerStatus directly instead of payload
+    const status = record && record.customerStatus ? record.customerStatus : '';
+    const statusType = classifyStatus(status);
+    
+    result.totalRecords += 1;
     result.recordCount += 1;
+    
+    switch (statusType) {
+      case 'approved': result.approvedCount += 1; break;
+      case 'pending': result.pendingCount += 1; break;
+      case 'rejected': result.rejectedCount += 1; break;
+      default: result.otherCount += 1; break;
+    }
   }
 
   return result;

@@ -209,9 +209,10 @@
           <h3>Collections</h3>
           <button class="active" data-collection="users">Users</button>
           <button data-collection="teams">Teams</button>
-          <button data-collection="records">Records</button>
           <button data-collection="teamStats">Team Stats</button>
           <button data-collection="registrationSummaries">Registration Summaries</button>
+          <h3>Performance</h3>
+          <button data-collection="userPerformance">User Performance</button>
           <h3 style="margin-top:18px;">Insights</h3>
           <button data-collection="statistics">📊 Statistics</button>
         </aside>
@@ -417,7 +418,8 @@
           { name: 'totalRecords', label: 'Total Records' },
           { name: 'agents', label: 'Agents', textarea: true },
           { name: 'payload', label: 'Payload', textarea: true }
-        ]}
+        ]},
+        userPerformance: { key: null, label: 'User Performance', isSpecial: true }
       };
 
       function escapeHtml(value) {
@@ -645,6 +647,13 @@
           return;
         }
 
+        if (collection === 'userPerformance') {
+          document.getElementById('collectionCard').style.display = 'none';
+          document.getElementById('statisticsCard').style.display = 'block';
+          loadUserPerformance();
+          return;
+        }
+
         document.getElementById('collectionCard').style.display = 'block';
         document.getElementById('statisticsCard').style.display = 'none';
         state.activeCollection = collection;
@@ -652,6 +661,67 @@
         state.currentItems = items;
         renderStats();
         renderTable();
+      }
+
+      async function loadUserPerformance() {
+        const statsRow = document.getElementById('statsRow');
+        const tableWrap = document.getElementById('tableWrap');
+        
+        // Show loading state
+        statsRow.innerHTML = '<div class="stat"><div class="label">Status</div><div class="value">Loading...</div></div>';
+        tableWrap.innerHTML = '<div class="empty">Loading performance data...</div>';
+
+        try {
+          const response = await makeAdminRequest('/admin/api/user-performance/dashboard');
+          const data = await response.json();
+          const dashboard = data.dashboard || [];
+
+          // Render performance stats
+          statsRow.innerHTML = `
+            <div class="stat"><div class="label">Total Agents</div><div class="value">${dashboard.length}</div></div>
+            <div class="stat"><div class="label">Total Records</div><div class="value">${dashboard.reduce((sum, d) => sum + Number(d.total_records || 0), 0)}</div></div>
+            <div class="stat"><div class="label">Total Approved</div><div class="value">${dashboard.reduce((sum, d) => sum + Number(d.approved || 0), 0)}</div></div>
+            <div class="stat"><div class="label">Total Rejected</div><div class="value">${dashboard.reduce((sum, d) => sum + Number(d.rejected || 0), 0)}</div></div>
+          `;
+
+          // Render performance table
+          if (!dashboard.length) {
+            tableWrap.innerHTML = '<div class="empty">No performance data available</div>';
+            return;
+          }
+
+          const rows = dashboard.map((d) => {
+            const agentName = d.originalagentname || d.username;
+            return `<tr>
+              <td>${escapeHtml(agentName)}</td>
+              <td>${d.total_records}</td>
+              <td>${d.approved} (${d.approved_pct}%)</td>
+              <td>${d.pending} (${d.pending_pct}%)</td>
+              <td>${d.rejected} (${d.rejected_pct}%)</td>
+              <td>${d.approval_rate_pct}%</td>
+              <td>${d.workload_share_pct}%</td>
+            </tr>`;
+          }).join('');
+
+          tableWrap.innerHTML = `
+            <table>
+              <thead><tr>
+                <th>Agent</th>
+                <th>Total Records</th>
+                <th>Approved</th>
+                <th>Pending</th>
+                <th>Rejected</th>
+                <th>Approval Rate</th>
+                <th>Workload Share</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          `;
+        } catch (error) {
+          console.error('Failed to load performance dashboard:', error);
+          statsRow.innerHTML = '<div class="stat"><div class="label">Status</div><div class="value">Error</div></div>';
+          tableWrap.innerHTML = '<div class="empty">Failed to load performance data</div>';
+        }
       }
 
       function openModal(item = null) {
