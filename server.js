@@ -1668,6 +1668,272 @@ function parsePeriodDays(value, fallback = 30) {
   return Math.min(Math.floor(n), 365);
 }
 
+// =====================================================================
+// Multi-period stats (day / week / month / quarter / year)
+// =====================================================================
+// Everything below builds on recordTimestamp/dayKey/emptyStatusBucket/
+// addToBucket/classifyStatus already defined above. It adds a generic
+// "period" concept so the same charting/ranking logic can serve daily,
+// weekly, monthly, quarterly, and yearly views without duplicating code.
+
+const VALID_PERIODS = ['day', 'week', 'month', 'quarter', 'year'];
+
+function parsePeriod(value, fallback = 'day') {
+  const p = String(value || '').toLowerCase();
+  return VALID_PERIODS.includes(p) ? p : fallback;
+}
+
+function parsePeriodCount(value, period, fallback) {
+  const defaults = { day: 30, week: 12, month: 12, quarter: 8, year: 5 };
+  const max = { day: 365, week: 104, month: 60, quarter: 40, year: 20 };
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback || defaults[period] || 30;
+  return Math.min(Math.floor(n), max[period] || 100);
+}
+
+// Start-of-day (UTC) for a given date.
+function startOfDay(date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+// Start of the ISO-ish week (Monday) containing `date`.
+function startOfWeek(date) {
+  const d = startOfDay(date);
+  const dow = (d.getUTCDay() + 6) % 7; // 0 = Monday
+  d.setUTCDate(d.getUTCDate() - dow);
+  return d;
+}
+
+function startOfMonth(date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+}
+
+function startOfQuarter(date) {
+  const q = Math.floor(date.getUTCMonth() / 3);
+  return new Date(Date.UTC(date.getUTCFullYear(), q * 3, 1));
+}
+
+function startOfYear(date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+}
+
+// Returns the start-of-period Date for `date`, given a period name.
+function startOfPeriod(date, period) {
+  switch (period) {
+    case 'week': return startOfWeek(date);
+    case 'month': return startOfMonth(date);
+    case 'quarter': return startOfQuarter(date);
+    case 'year': return startOfYear(date);
+    default: return startOfDay(date);
+  }
+}
+
+// A stable string key for the bucket a given date falls into.
+function periodKey(date, period) {
+  const d = startOfPeriod(date, period);
+  if (period === 'month') return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  if (period === 'quarter') return `${d.getUTCFullYear()}-Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
+  if (period === 'year') return String(d.getUTCFullYear());
+  return dayKey(d); // day and week buckets are keyed by their start date
+}
+
+// A short human label for a bucket, given its start date.
+function periodLabel(date, period) {
+  const d = date;
+  if (period === 'day') return dayKey(d);
+  if (period === 'week') return `Week of ${dayKey(d)}`;
+  if (period === 'month') return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  if (period === 'quarter') return `${d.getUTCFullYear()} Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
+  if (period === 'year') return String(d.getUTCFullYear());
+  return dayKey(d);
+}
+
+// Steps `date` back by one unit of `period`. Used to walk backwards from
+// "now" to build a zero-filled, fixed-length list of buckets.
+function stepPeriodBack(date, period) {
+  const d = new Date(date);
+  if (period === 'day') { d.setUTCDate(d.getUTCDate() - 1); return d; }
+  if (period === 'week') { d.setUTCDate(d.getUTCDate() - 7); return d; }
+  if (period === 'month') { d.setUTCMonth(d.getUTCMonth() - 1); return d; }
+  if (period === 'quarter') { d.setUTCMonth(d.getUTCMonth() - 3); return d; }
+  if (period === 'year') { d.setUTCFullYear(d.getUTCFullYear() - 1); return d; }
+  return d;
+}
+
+// Builds `count` consecutive, zero-filled period buckets ending with the
+// bucket that contains "now" (oldest first).
+function generatePeriodRange(period, count) {
+  const now = startOfPeriod(new Date(), period);
+  const starts = [now];
+  for (let i = 1; i < count; i += 1) {
+    starts.push(stepPeriodBack(starts[starts.length - 1], period));
+  }
+  starts.reverse();
+  return starts.map((start) => ({
+    key: periodKey(start, period),
+    label: periodLabel(start, period),
+    start
+  }));
+}
+
+// Groups `records` into `count` fixed-length, zero-filled period buckets
+// (day/week/month/quarter/year), each with approved/pending/rejected/
+// other/total counts -- the generic building block behind every chart on
+// the admin "Statistics" tab.
+function bucketRecordsByPeriod(records, period, count) {
+  const range = generatePeriodRange(period, count);
+  const buckets = new Map();
+  for (const r of range) {
+    buckets.set(r.key, { period: r.key, label: r.label, start: r.start.toISOString(), ...emptyStatusBucket() });
+  }
+  const earliestStart = range.length ? range[0].start : null;
+
+  for (const record of records) {
+    const ts = recordTimestamp(record);
+    if (!ts || (earliestStart && ts < earliestStart)) continue;
+    const key = periodKey(ts, period);
+    const bucket = buckets.get(key);
+    if (bucket) addToBucket(bucket, record?.customerStatus);
+  }
+  return Array.from(buckets.values());
+}
+
+// Ranks `entities` (users or teams) by record volume within a period.
+// period === 'all' ranks over the entity's entire history; any other
+// period value ranks only records that fall in the *current* bucket for
+// that period (e.g. "this week", "this quarter").
+function rankEntitiesForPeriod(records, entities, scopeKey, period, limit) {
+  const grouped = groupRecordsBy(records, scopeKey);
+  const since = period === 'all' ? null : startOfPeriod(new Date(), period);
+  const ranked = (entities || []).map((entity) => {
+    const id = entity[scopeKey];
+    let entityRecords = grouped.get(String(id)) || [];
+    if (since) {
+      entityRecords = entityRecords.filter((r) => {
+        const ts = recordTimestamp(r);
+        return ts && ts >= since;
+      });
+    }
+    const totals = computeStatusTotals(entityRecords);
+    return {
+      id,
+      name: scopeKey === 'teamId' ? (entity.name || id) : (entity.username || id),
+      totalRecords: totals.total,
+      approvedCount: totals.approved,
+      pendingCount: totals.pending,
+      rejectedCount: totals.rejected,
+      approvalRate: totals.approvalRate
+    };
+  }).sort((a, b) => b.totalRecords - a.totalRecords);
+
+  return ranked.slice(0, limit).map((row, index) => ({ rank: index + 1, ...row }));
+}
+
+// GET /stats/series?period=day|week|month|quarter|year&count=30
+// Global time series across all records, bucketed by the requested period.
+app.get('/stats/series', async (req, res) => {
+  ensureDb();
+  const period = parsePeriod(req.query.period, 'day');
+  const count = parsePeriodCount(req.query.count, period);
+  const records = await listCollection('records');
+  const series = bucketRecordsByPeriod(Array.isArray(records) ? records : [], period, count);
+  res.json({ period, count, series });
+});
+
+// GET /stats/users/:userId/series?period=day|week|month|quarter|year&count=30
+app.get('/stats/users/:userId/series', async (req, res) => {
+  ensureDb();
+  const { userId } = req.params;
+  const period = parsePeriod(req.query.period, 'day');
+  const count = parsePeriodCount(req.query.count, period);
+  const records = await filterItems('records', 'userId', userId);
+  const series = bucketRecordsByPeriod(records, period, count);
+  res.json({ userId, period, count, series });
+});
+
+// GET /stats/teams/:teamId/series?period=day|week|month|quarter|year&count=30
+app.get('/stats/teams/:teamId/series', async (req, res) => {
+  ensureDb();
+  const { teamId } = req.params;
+  const period = parsePeriod(req.query.period, 'day');
+  const count = parsePeriodCount(req.query.count, period);
+  const records = await filterItems('records', 'teamId', teamId);
+  const series = bucketRecordsByPeriod(records, period, count);
+  res.json({ teamId, period, count, series });
+});
+
+// GET /stats/ranking?scope=users|teams&period=day|week|month|quarter|year|all&limit=10
+// Ranking (leaderboard) for the *current* bucket of the requested period
+// (e.g. "today", "this week", "this month", "this quarter", "this year"),
+// or the entity's entire history when period=all.
+app.get('/stats/ranking', async (req, res) => {
+  ensureDb();
+  const scope = req.query.scope === 'teams' ? 'teams' : 'users';
+  const scopeKey = scope === 'teams' ? 'teamId' : 'userId';
+  const rawPeriod = String(req.query.period || 'all').toLowerCase();
+  const period = rawPeriod === 'all' ? 'all' : parsePeriod(rawPeriod, 'all');
+  const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
+
+  const [records, entities] = await Promise.all([
+    listCollection('records'),
+    listCollection(scope)
+  ]);
+
+  const ranking = rankEntitiesForPeriod(Array.isArray(records) ? records : [], entities || [], scopeKey, period, limit);
+  res.json({ scope, period, ranking });
+});
+
+// GET /stats/dashboard — the single "ultimate stats" endpoint powering the
+// admin console's Statistics tab: overview totals, activity counters,
+// zero-filled time series for every period granularity, and rankings for
+// both users and teams across every period. Fetches records/users/teams
+// exactly once and reuses them for every computation below, so the whole
+// dashboard costs 3 DB round trips regardless of how many charts/tables
+// it renders.
+app.get('/stats/dashboard', async (req, res) => {
+  ensureDb();
+  const [records, users, teams] = await Promise.all([
+    listCollection('records'),
+    listCollection('users'),
+    listCollection('teams')
+  ]);
+  const all = Array.isArray(records) ? records : [];
+  const totals = computeStatusTotals(all);
+
+  const periodPlan = [
+    ['day', 30],
+    ['week', 12],
+    ['month', 12],
+    ['quarter', 8],
+    ['year', 5]
+  ];
+  const series = {};
+  for (const [period, count] of periodPlan) {
+    series[period] = bucketRecordsByPeriod(all, period, count);
+  }
+
+  const rankingPeriods = ['day', 'week', 'month', 'quarter', 'year', 'all'];
+  const rankings = { users: {}, teams: {} };
+  for (const p of rankingPeriods) {
+    rankings.users[p] = rankEntitiesForPeriod(all, users || [], 'userId', p, 10);
+    rankings.teams[p] = rankEntitiesForPeriod(all, teams || [], 'teamId', p, 10);
+  }
+
+  res.json({
+    generatedAt: nowIso(),
+    totals,
+    userCount: (users || []).length,
+    teamCount: (teams || []).length,
+    activity: {
+      last24h: countsSince(all, daysAgo(1)),
+      last7d: countsSince(all, daysAgo(7)),
+      last30d: countsSince(all, daysAgo(30))
+    },
+    series,
+    rankings
+  });
+});
+
 // GET /stats/overview — global "god stats" across all records.
 app.get('/stats/overview', async (req, res) => {
   ensureDb();
