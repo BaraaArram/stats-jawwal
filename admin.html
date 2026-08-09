@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -357,6 +356,13 @@
         
         return response;
       }
+
+      const state = {
+        collections: {},
+        activeCollection: 'users',
+        currentItems: [],
+        editingId: null
+      };
 
       const collectionMeta = {
         users: { key: 'userId', label: 'Users', fields: [
@@ -733,8 +739,3 @@
     </script>
   </body>
 </html>
- 
-
-
-
-
