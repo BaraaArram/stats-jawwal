@@ -1708,13 +1708,14 @@ app.post('/cache/refresh', async (req, res) => {
 // reasonably.
 
 function recordTimestamp(record) {
+  // Prioritize actual business dates over database timestamps
   const candidates = [
-    record?.createdAt,
-    record?.payload?.ingest?.receivedAt,
-    record?.submissionDate,
-    record?.payload?.summaryGeneratedAt,
-    record?.creationDate,
-    record?.approvalDate,
+    record?.submissionDate,  // Primary: when the record was submitted
+    record?.creationDate,    // Secondary: when the record was created
+    record?.approvalDate,    // Tertiary: when approved
+    record?.payload?.summaryGeneratedAt,  // Fallback: when summary was generated
+    record?.payload?.ingest?.receivedAt,  // Last resort: when ingested
+    record?.createdAt,      // Database addition date (should be last priority)
     record?.updatedAt
   ];
   for (const candidate of candidates) {
